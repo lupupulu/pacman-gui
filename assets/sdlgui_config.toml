@@ -1,0 +1,31 @@
+# sdlgui 默认配置（TOML）
+#
+# 根层：全局设置
+#   version            配置格式版本，将来改结构时用来做兼容
+#   name / description 这份配置的名字和说明，给设置界面显示
+#   default            启动时用哪个主题（对应下面的 [表名]）
+#   fonts              字体族，按优先级排列（缺字形时依次回退）
+#   text_size          各级字号，单位 pt
+#   item_height        列表项 / 按钮的高度，单位 px
+#   rect_round_corner  控件圆角半径，单位 px，0 表示直角
+#
+# 每个主题（[Bright]、[Dark]……）：
+#   color[]        调色板，颜色写成 0xRRGGBBAA
+#   text_color[]   文字颜色
+
+version = "0.0.1"
+name = "Default"
+description = "Default sdlgui theme."
+default = "Bright"
+fonts = [ "monospace" ]
+text_size = [ 20 , 16 , 14 ]
+item_height = 32.0
+rect_round_corner = 0.0
+
+[Bright]
+color = [ 0xFFFFFFFF, 0x7F7F7FFF, 0x1E90FFFF , 0x1E90FFFF ]
+text_color = [ 0x000000FF ]
+
+[Dark]
+color = [ 0x000000FF, 0x7F7F7FFF, 0x3399FFFF , 0x1E90FFFF ]
+text_color = [ 0xFFFFFFFF ]

@@ -8,6 +8,7 @@
 
 - C17 编译器（gcc / clang）
 - SDL3 开发包（本机 3.4.18）、pkg-config、make
+- Python 3.10+（构建时运行 `tools/ttf_to_c.py`，把字体嵌成 C）
 
 Arch Linux：
 
@@ -21,6 +22,7 @@ sudo pacman -S sdl3
 make          # 生成 build/pacman-gui
 make run      # 编译并运行
 make debug    # ASan/UBSan 版本，查内存问题
+make font     # 重新生成嵌入字体的 build/pacman_pixel_font.c
 make clean    # 清理
 ```
 
@@ -29,6 +31,8 @@ make clean    # 清理
 ```
 Makefile       构建规则（pkg-config 自动取 SDL3 的编译/链接参数）
 src/main.c     全部代码：初始化、主循环、事件、绘制、退出
+build/pacman_pixel_font.c  构建时生成的嵌入字体源（已被 .gitignore 忽略）
+tools/         字体/图标生成脚本
 build/         构建产物（已被 .gitignore 忽略）
 ```
 
@@ -46,6 +50,15 @@ build/         构建产物（已被 .gitignore 忽略）
 - 窗口可缩放，但绘制坐标用的是像素。若想让界面随窗口等比缩放，用
   `SDL_SetRenderLogicalPresentation(renderer, 逻辑宽, 逻辑高, SDL_LOGICAL_PRESENTATION_LETTERBOX)`，
   之后所有坐标都按固定逻辑分辨率写。
+
+## 嵌入字体
+
+`assets/PacmanPixel-ASCII.ttf` 在构建时由 `tools/ttf_to_c.py` 转成
+`build/pacman_pixel_font.c`，随后编译并自动链接进可执行文件，运行时不需要外部字体文件。
+生成物只留在 `build/` 下，`make clean` 会一起清掉；修改字体后普通 `make` 会自动重新生成，
+也可以显式运行 `make font`。默认主题在 `sdlgui_init()` 里把该字体以第一个字号（20 pt）打开，
+存入 `theme.fonts[0]` / `theme.font_size = 1`，并在 `sdlgui_quit()` 中关闭。
+具体用法和 SDL3_ttf 打开方式见 `tools/README.md`。
 
 ## 加依赖：只需改 Makefile 一行
 

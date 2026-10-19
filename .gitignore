@@ -3,3 +3,7 @@ build/
 *.d
 .cache/
 compile_commands.json
+hide/
+
+__pycache__/
+*.pyc
