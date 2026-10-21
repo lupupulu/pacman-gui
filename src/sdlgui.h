@@ -161,7 +161,8 @@ void draft_draw_circle_h(void *l);
 
 typedef struct {
     draw_func draw;
-    float points[3][2];
+    SUBLAYOUT_DEF
+    float points[3][2];   /* 以包围盒左上角为原点的局部坐标 */
     unsigned color;
     unsigned border_color;
 }draft_triangle_t;
@@ -187,7 +188,7 @@ typedef struct {
     int can_enter:1; // 允许多行显示
     int can_change:1; // 显示内容可以发生变化
 
-    char *context;
+    char *context;    /* 借用调用方的字符串，create 不复制也不负责释放 */
 
     float width_limit;
     float height_per_line;
