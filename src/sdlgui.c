@@ -1,10 +1,8 @@
 #include <SDL3/SDL.h>
 #include <SDL3_ttf/SDL_ttf.h>
 #include "sdlgui.h"
-#include <stdio.h>
 #include <stdlib.h>
 #include <memory.h>
-#include <math.h>
 
 #define TRUE  1
 #define FALSE 0
@@ -14,51 +12,6 @@ static SDL_Window *window=NULL;
 static SDL_Renderer *renderer=NULL;
 static layout_t root={.son_resizable=1,.update=update_layout};
 
-/* theme_t 里的 color/text 是 unsigned *，内建主题需要各自准备静态后备数组。 */
-static unsigned builtin_bright_color[]={0xFFFFFFFF,0x7F7F7FFF,0x1E90FFFF,0x1E90FFFF};
-static unsigned builtin_bright_text_color[]={0x000000FF};
-static unsigned builtin_dark_color[]={0x000000FF,0x7F7F7FFF,0x3399FFFF,0x1E90FFFF};
-static unsigned builtin_dark_text_color[]={0x000000FF};
-static unsigned builtin_text_size[]={20,16,14};
-
-/* 默认嵌入字体：由 tools/ttf_to_c.py 生成到 build/pacman_pixel_font.c。 */
-extern const unsigned char pacman_pixel_ttf[];
-extern const size_t pacman_pixel_ttf_len;
-
-static theme_slice_t builtin_theme_slice[]={
-    {
-        .name="Bright",
-        .color=builtin_bright_color,
-        .color_size=4,
-        .text_color=builtin_bright_text_color,
-        .text_color_size=1
-    },
-    {
-        .name="Dark",
-        .color=builtin_dark_color,
-        .color_size=4,
-        .text_color=builtin_dark_text_color,
-        .text_color_size=1
-    }
-};
-
-static theme_t theme={
-    .version="0.0.1",
-    .name=NULL,
-    .now_slice=&builtin_theme_slice[0],
-
-    .fonts=NULL,
-    .font_size=0,
-
-    .text=builtin_text_size,
-    .text_size=3,
-
-    .item_height=32.0f,
-    .rect_round_corner=0.0f,
-
-    .slices=builtin_theme_slice,
-    .slice_size=2
-};
 
 static float mouse_pos[]={0,0};   /* 鼠标在窗口内的位置 */
 static int mouse_buttons[]={0,0,0,0,0};   /* 左 中 右 X1 X2，1=按下 0=未按下 */
@@ -100,57 +53,6 @@ int get_mouse_x2(void){
 }
 
 
-/* 关闭并释放默认主题里的字体。必须在 TTF_Quit() 之前调用。 */
-static void free_theme_fonts(void){
-    if(theme.fonts!=NULL){
-        for(size_t i=0;i<theme.font_size;i++){
-            if(theme.fonts[i]!=NULL){
-                TTF_CloseFont(theme.fonts[i]);
-            }
-        }
-        free(theme.fonts);
-        theme.fonts=NULL;
-    }
-    theme.font_size=0;
-}
-
-/* 把嵌入的默认字体打开一份，挂到默认主题上。
- * fonts 是字体族列表（默认配置里只有一个），text 是各级字号；
- * 这里用第一个字号打开，后续渲染可按需 TTF_SetFontSize()。 */
-static int load_default_font(void){
-    float ptsize=theme.text[0];
-    if(theme.text!=NULL&&theme.text_size>0){
-        ptsize=(float)theme.text[0];
-    }else{
-        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,"No text sizes configured, using 20 pt");
-    }
-
-    TTF_Font **fonts=calloc(1,sizeof(*fonts));
-    if(fonts==NULL){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"calloc fonts failed: %s",SDL_GetError());
-        return 0;
-    }
-
-    SDL_IOStream *io=SDL_IOFromConstMem(pacman_pixel_ttf,pacman_pixel_ttf_len);
-    if(io==NULL){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"SDL_IOFromConstMem failed: %s",SDL_GetError());
-        free(fonts);
-        return 0;
-    }
-
-    fonts[0]=TTF_OpenFontIO(io,true,ptsize);
-    if(fonts[0]==NULL){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"TTF_OpenFontIO(%.0f) failed: %s",ptsize,SDL_GetError());
-        free(fonts);
-        return 0;
-    }
-
-    theme.fonts=fonts;
-    theme.font_size=1;
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,"Loaded embedded default font at %.0f pt",ptsize);
-    return 1;
-}
-
 void sdlgui_init(const char *title,int width,int height,const char *iconpath){
     if(!SDL_Init(SDL_INIT_VIDEO)||!TTF_Init()){
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"SDL_Init failed: %s",SDL_GetError());
@@ -165,7 +67,7 @@ void sdlgui_init(const char *title,int width,int height,const char *iconpath){
 
     SDL_SetRenderVSync(renderer,1);
 
-    if(!load_default_font()){
+    if(!theme_load_default_font()){
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"Failed to load the embedded default font");
         sdlgui_quit();
         exit(1);
@@ -187,7 +89,7 @@ void sdlgui_init(const char *title,int width,int height,const char *iconpath){
 }
 void sdlgui_quit(void){
     delete_layout(&root);
-    free_theme_fonts();
+    theme_quit();
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     TTF_Quit();
@@ -406,6 +308,11 @@ void update_layout(void *p){
 
 
 
+layout_rect_t *create_layout_rect(void *parent,float w,float h,align_t align){
+    return create_layout(sizeof(layout_rect_t),parent,w,h,rect_draw,update_layout,NULL,NULL,align);
+}
+
+
 
 /* ---- 各判定框的命中判定 ----
    每个子布局结构体的第一个成员都是 check_func check，指到下面自己的函数。
@@ -414,7 +321,7 @@ void update_layout(void *p){
    （相对定位由 update_layout_only() 按 parent+align 算好，这里不再加偏移）。
    命中返回 TRUE。 */
 
-int check_default(void *p,float x,float y){ /* 矩形 */
+int check_rect(void *p,float x,float y){ /* 矩形 */
     default_sublayout_t *sl=p;
     update_layout_only(&sl->align);
 
@@ -491,7 +398,10 @@ int check_circle_h(void *p,float x,float y){
 }
 
 
-layout_button_t *button_init(layout_button_t *l,int need_bounce,button_callback_func callback,void *data){
+
+layout_button_t *create_layout_button(void *parent,float w,float h,align_t align,int need_bounce,button_callback_func callback,void *data){
+    layout_button_t *l=create_layout(sizeof(layout_button_t),parent,w,h,NULL,update_layout,button_clear,button_mouse,align);
+
     l->need_bounce=need_bounce;
 
     l->callback=callback;

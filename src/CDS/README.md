@@ -35,7 +35,7 @@
 - **无外部依赖**：只用标准库和少量 POSIX 接口（见"兼容性"）。
 - **INI**：读文件 / 从内存解析 / 写出（`FILE*`、`fd`、内存三选一）/ 增删改查；section 与 pair 都保持**有序**，查找走二分。
 - **TOML**：表、数组表（`[[x]]`）、数组（可嵌套）、基本/字面量/多行字符串、整数、浮点、布尔、日期时间；查找同样走二分。
-- **工具**：`confc_find_path`（支持 `~`、`~user`、`$VAR`、`${VAR}`）、转义解析（含 `\uXXXX` / `\UXXXXXXXX`）、字符串→整数/浮点/日期（宽松 / 严格两种模式）。
+- **工具**：`confc_find_file`（支持 `~`、`~user`、`$VAR`、`${VAR}`）、转义解析（含 `\uXXXX` / `\UXXXXXXXX`）、字符串→整数/浮点/日期（宽松 / 严格两种模式）。
 
 ### INI
 
@@ -150,14 +150,25 @@ typedef struct { toml_type_t tp; const char *name; toml_pair_t *pairs; size_t si
 ### 工具函数
 
 ```c
-char *ls=confc_find_path(getenv("PATH"),"ls");   /* 支持 ~ ~user $VAR ${VAR} */
-printf("%s\n",ls);
-free(ls);
+/* 在 ':' 分隔的目录列表里找可读的普通文件（配置文件、资源等） */
+char *cfg=confc_find_file("assets:.","config.toml");   /* 支持 ~ ~user $VAR ${VAR} */
+printf("%s\n",cfg);
+free(cfg);
 
 long v=confc_str_to_int("0x1f");                 /* 宽松模式，C 规则 */
 long t=confc_ex_str_to_int("1_000",&n,&err,1);   /* 严格模式，TOML 规则 */
 
 char *s=confc_parse_esc_unicode("u4e2d");        /* -> "中"，调用者 free（参数从反斜杠后面开始） */
+```
+
+旧名字 `confc_find_path` / `confc_ex_find_path` 仍然保留，但要在包含头文件**之前**
+定义 `CONFC_LEGACY`（值 >= 10）才会编译出来；它们等价于 `confc_find_file`，
+命中条件也变成"可读普通文件"，不再检查可执行位：
+
+```c
+#define CONFC_LEGACY 10
+#define CONFC_IMPLEMENTATION
+#include "confc.h"
 ```
 
 `*_ex` 系列统一用 `size_t *n` 报告"用掉了多少字符"、`int *error` 报告状态：

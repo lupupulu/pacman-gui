@@ -12,27 +12,33 @@ typedef long ssize_t;
 
 
 /**
- * @brief 在以 ':' 分隔的 path 中查找可执行的 target。
+ * @brief 在以 ':' 分隔的 path 中查找可读的 target。
  *
- * 每个路径项支持 ~、~用户名、$VAR_NAME 和 ${VAR} 展开；命中条件是普通文件
- * 且对当前用户可执行。
+ * 每个路径项支持 ~、~用户名、$VAR_NAME 和 ${VAR} 展开；命中条件只是对当前
+ * 用户可读（access(...,R_OK)），不判断文件类型；要按类型/权限筛选请用
+ * confc_ex_find_path。
  *
  * @param[in] path   ':' 分隔的目录列表
- * @param[in] target 要查找的可执行文件名；含 '/' 时按路径本身判断，不搜索 path
+ * @param[in] target 要查找的文件名；含 '/' 时按路径本身判断，不搜索 path
  * @return malloc 出来的完整路径，由调用者 free；找不到返回 NULL
  */
 char *confc_find_path(const char *path,const char *target);
 
 /**
- * @brief 同 confc_find_path，另外报告命中的是 path 里的哪一项。
+ * @brief 同 confc_find_path，另外可以按文件类型筛选，并报告命中的是 path 里的哪一项。
  *
  * @param[in]  path   ':' 分隔的目录列表
- * @param[in]  target 要查找的可执行文件名
+ * @param[in]  target 要查找的文件名
  * @param[out] start  命中时指向 path 中那个路径项的起点；未命中、target 本身
  *                    是绝对路径时为 NULL；可以传 NULL
+ * @param[in]  type   类型/权限位掩码：要求 (st_mode & type) == type，0 表示不检查
+ *                    （只要求可读）。例如 S_IFREG 只要普通文件，
+ *                    S_IFREG|S_IXUSR 要求普通文件且属主可执行；常量来自
+ *                    <sys/stat.h>（glibc 下 -std=c99 可能还要 _DEFAULT_SOURCE，
+ *                    也可以直接写 0100000 / 0100000|0100 这样的八进制数）
  * @return malloc 出来的完整路径，由调用者 free；找不到返回 NULL
  */
-char *confc_ex_find_path(const char *path,const char *target,char **start);
+char *confc_ex_find_path(const char *path,const char *target,char **start,int type);
 
 /**
  * @brief 解析转义序列，返回转义后的字符。
@@ -223,21 +229,25 @@ typedef struct {
     toml_type_t tp;
     char *str;
 }toml_string_t;
+char *toml_take_string(toml_type_t *tp);
 
 typedef struct {
     toml_type_t tp;
     long v;
 }toml_integer_t;
+long toml_take_integer(toml_type_t *tp);
 
 typedef struct {
     toml_type_t tp;
     double v;
 }toml_float_t;
+double toml_take_float(toml_type_t *tp);
 
 typedef struct {
     toml_type_t tp;
     int v;
 }toml_boolean_t;
+int toml_take_boolean(toml_type_t *tp);
 
 typedef struct {
     toml_type_t tp;
@@ -329,9 +339,9 @@ typedef darray_t(char) da_str;
 
 
 char *confc_find_path(const char *path,const char *target){
-    return confc_ex_find_path(path,target,NULL);
+    return confc_ex_find_path(path,target,NULL,0);
 }
-char *confc_ex_find_path(const char *path,const char *target,char **start){
+char *confc_ex_find_path(const char *path,const char *target,char **start,int type){
     if(start!=NULL){
         *start=NULL;
     }
@@ -342,9 +352,14 @@ char *confc_ex_find_path(const char *path,const char *target,char **start){
 
     /* target 带 '/' 时本身就是一个路径，不搜索 path */
     if(target[0]=='/'){
-        struct stat status;
-        if(stat(target,&status)!=0||!S_ISREG(status.st_mode)||access(target,X_OK)!=0){
+        if(access(target,R_OK)!=0){
             return NULL;
+        }
+        if(type!=0){
+            struct stat status;
+            if(stat(target,&status)!=0||(status.st_mode&(mode_t)type)!=(mode_t)type){
+                return NULL;
+            }
         }
         size_t size=strlen(target)+1;
         char *copy=malloc(size);
@@ -509,8 +524,12 @@ char *confc_ex_find_path(const char *path,const char *target,char **start){
             failed|=da_add(sizeof(char),&candidate,"");
 
             if(!failed){
-                struct stat status;
-                if(stat(candidate.arr,&status)==0&&S_ISREG(status.st_mode)&&access(candidate.arr,X_OK)==0){
+                int hit=(access(candidate.arr,R_OK)==0);
+                if(hit&&type!=0){
+                    struct stat status;
+                    hit=(stat(candidate.arr,&status)==0&&(status.st_mode&(mode_t)type)==(mode_t)type);
+                }
+                if(hit){
                     if(start!=NULL){
                         /* 命中的路径项在 path 里的起点（path 是 const，这里按声明转掉 const） */
                         *start=(char *)entry;
@@ -1761,6 +1780,35 @@ const char *ini_lookup_from_section(ini_section_t *section,const char *key){
 }
 
 
+
+
+char *toml_take_string(toml_type_t *tp){
+    if(*tp!=TOML_STRING){
+        return NULL;
+    }
+    return ((toml_string_t*)tp)->str;
+}
+
+long toml_take_integer(toml_type_t *tp){
+    if(*tp!=TOML_INTEGER){
+        return 0;
+    }
+    return ((toml_integer_t*)tp)->v;
+}
+
+double toml_take_float(toml_type_t *tp){
+    if(*tp!=TOML_FLOAT){
+        return 0.0;
+    }
+    return ((toml_float_t*)tp)->v;
+}
+
+int toml_take_boolean(toml_type_t *tp){
+    if(*tp!=TOML_BOOLEAN){
+        return -1;
+    }
+    return ((toml_boolean_t*)tp)->v;
+}
 
 
 toml_t toml_load(const char *filename){

@@ -9,7 +9,8 @@
 
 TARGET  := build/pacman-gui
 SRCDIR  := src
-SRCS    := $(wildcard $(SRCDIR)/*.c)
+# src/*.c 加上一级子目录（src/CDS/ 里的单头文件库实现）
+SRCS    := $(wildcard $(SRCDIR)/*.c $(SRCDIR)/*/*.c)
 
 # 嵌入字体：构建时把 assets/ 里的 TTF 转成 build/pacman_pixel_font.c，
 # 再和 src/*.c 一起编译链接。生成物全部留在 build/ 下，make clean 会清掉。
@@ -25,7 +26,7 @@ CC      ?= cc
 PKGCONF ?= pkg-config
 
 # 依赖库：SDL3 必选；要用 SDL3_ttf / SDL3_image / SDL3_mixer 时加进这个列表
-PKGS    := sdl3 sdl3-ttf
+PKGS    := sdl3 sdl3-ttf fontconfig
 
 CFLAGS  += -std=c99 -Wall -Wextra -Wshadow -O2 -g -MMD -MP
 CFLAGS  += $(shell $(PKGCONF) --cflags $(PKGS))

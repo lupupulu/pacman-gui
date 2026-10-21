@@ -2,53 +2,17 @@
 #define SDLGUI_H
 
 #include <stddef.h>
+#include "sdlgui_theme.h"
 
 #ifndef SDL_render_h_
 typedef struct SDL_Renderer SDL_Renderer;
+typedef struct SDL_Texture SDL_Texture;
 #endif
 #ifndef SDL_video_h_
 typedef struct SDL_Window SDL_Window;
 #endif
-#ifndef SDL_TTF_H_
-typedef struct TTF_Font TTF_Font;
-#endif
 
 typedef struct layout_t layout_t;   /* get_root() 等在定义之前就要用到 */
-
-#define COLOR_MAIN       0
-#define COLOR_SECONDARY  1
-#define COLOR_HIGHLIGHT  2
-#define COLOR_BUTTON     3
-
-#define TEXT_TITLE    0
-#define TEXT_SUBTITLE 1
-#define TEXT_CONTEXT  2
-
-typedef struct {
-    char *name;
-    unsigned *color;
-    size_t color_size;
-    unsigned *text_color;
-    size_t text_color_size;
-}theme_slice_t;
-
-typedef struct {
-    char *name;
-    char *version;
-    theme_slice_t *now_slice;
-
-    TTF_Font **fonts;   /* 已加载的字体族；默认主题在 sdlgui_init() 中填入嵌入字体 */
-    size_t font_size;
-
-    unsigned *text;
-    size_t text_size;
-
-    float item_height;
-    float rect_round_corner;
-
-    theme_slice_t *slices;
-    size_t slice_size;
-}theme_t;
 
 void sdlgui_init(const char *title,int width,int height,const char *iconpath);
 void sdlgui_quit(void);
@@ -147,7 +111,7 @@ typedef struct {
     unsigned color;
 }layout_rect_t; // 测试用矩形布局
 void rect_draw(void *l);
-#define create_layout_rect(parent,w,h,align) create_layout(sizeof(layout_rect_t),parent,w,h,rect_draw,update_layout,NULL,NULL,align)
+layout_rect_t *create_layout_rect(void *parent,float w,float h,align_t align);
 
 
 typedef int(*check_func)(void*,float x,float y);
@@ -168,7 +132,7 @@ typedef struct {
 
 /* 每种判定框一个 check 函数，签名与 check_func 一致：
    参数是子布局自己和鼠标的窗口坐标；子布局的 x/y 已经是窗口绝对坐标 */
-int check_default(void *sublayout,float x,float y);   /* 矩形 */
+int check_rect(void *sublayout,float x,float y);   /* 矩形 */
 int check_triangle(void *sublayout,float x,float y);  /* 三角形 */
 int check_rrect(void *sublayout,float x,float y);     /* 圆角矩形 */
 
@@ -178,38 +142,73 @@ int check_rrect(void *sublayout,float x,float y);     /* 圆角矩形 */
    两者圆心都取判定框中心 */
 int check_circle_w(void *sublayout,float x,float y);
 int check_circle_h(void *sublayout,float x,float y);
-#define check_circle_sublayout check_circle_h
+#define check_circle check_circle_h
 
+
+typedef void(*animate_func)(void*);
 
 typedef struct {
     draw_func draw;
     SUBLAYOUT_DEF
     unsigned color;
+    unsigned border_color;
 }draft_default_t;
+
+draft_default_t *draft_create_default(draw_func draw,align_t align,float w,float h,unsigned color,unsigned border_color);
+void draft_draw_rect(void *l);
+void draft_draw_circle_w(void *l);
+void draft_draw_circle_h(void *l);
+
 typedef struct {
     draw_func draw;
     float points[3][2];
     unsigned color;
+    unsigned border_color;
 }draft_triangle_t;
+
+draft_triangle_t *draft_create_triangle(align_t align,float *vertex,unsigned color,unsigned border_color);
+void draft_draw_triangle(void *l);
+
 typedef struct {
     draw_func draw;
     SUBLAYOUT_DEF
     float r;  // 圆角半径
     unsigned color;
+    unsigned border_color;
 }draft_rrect_t;
+
+draft_rrect_t *draft_create_rrect(align_t align,float w,float h,float r,unsigned color,unsigned border_color);
+void draft_draw_rrect(void *l);
+
 typedef struct {
     draw_func draw;
     SUBLAYOUT_DEF
 
-    int can_enter:1;
+    int can_enter:1; // 允许多行显示
+    int can_change:1; // 显示内容可以发生变化
+
+    char *context;
 
     float width_limit;
     float height_per_line;
     float height_limit;
 
-    unsigned text_color;
-    unsigned background_color;
+    unsigned color;
 }draft_text_t;
+
+draft_text_t *draft_create_text(align_t align,char *context,float wl,float hl,float hpl,unsigned color);
+void draft_draw_text(void *l);
+
+typedef struct {
+    draw_func draw;
+    SUBLAYOUT_DEF
+
+    SDL_Texture *tex;
+}draft_texture_t;
+
+draft_texture_t *draft_create_picture_from_memory(align_t align,const char *file,size_t size);
+draft_texture_t *draft_create_picture(align_t align,const char *path);
+void draft_draw_texture(void *l);
 
 typedef struct {
     layout_t l;
@@ -217,6 +216,9 @@ typedef struct {
     int draft_resizable:1;
     draw_func **drafts;
     size_t draft_size;
+
+    animate_func animation;
+    double degree;  // 动画完成程度
 }layout_draw_t;
 
 
@@ -234,9 +236,7 @@ typedef struct {
     void *data;
 }layout_button_t;
 
-layout_button_t *button_init(layout_button_t *l,int need_bounce,button_callback_func callback,void *data);
-#define create_layout_button(parent,w,h,align,need_bounce,callback,data) \
-    init_button_layout(create_layout(sizeof(layout_button_t),parent,w,h,NULL,update_layout,button_clear,button_mouse,align),need_bounce,callback,data)
+layout_button_t *create_layout_button(void *parent,float w,float h,align_t align,int need_bounce,button_callback_func callback,void *data);
 
 void button_clear(void *l);
 void button_mouse(void *l);

@@ -8,12 +8,13 @@
 
 - C17 编译器（gcc / clang）
 - SDL3 开发包（本机 3.4.18）、pkg-config、make
+- fontconfig 开发包（按配置里的字体族名查找字体文件）
 - Python 3.10+（构建时运行 `tools/ttf_to_c.py`，把字体嵌成 C）
 
 Arch Linux：
 
 ```sh
-sudo pacman -S sdl3
+sudo pacman -S sdl3 fontconfig
 ```
 
 ## 编译与运行
@@ -30,13 +31,18 @@ make clean    # 清理
 
 ```
 Makefile       构建规则（pkg-config 自动取 SDL3 的编译/链接参数）
-src/main.c     全部代码：初始化、主循环、事件、绘制、退出
+src/main.c     程序入口与主循环
+src/sdlgui.c   窗口、鼠标、布局与绘制基础
+src/sdlgui.h
+src/sdlgui_theme.c   主题、配色、字体与 TOML 配置
+src/sdlgui_theme.h
+src/CDS/       单头文件配置/TOML 解析库
 build/pacman_pixel_font.c  构建时生成的嵌入字体源（已被 .gitignore 忽略）
 tools/         字体/图标生成脚本
 build/         构建产物（已被 .gitignore 忽略）
 ```
 
-`Makefile` 用 `$(wildcard src/*.c)` 收集源文件，之后再拆出 `ui.c`、`alpm.c`
+`Makefile` 用 `$(wildcard src/*.c src/*/*.c)` 收集源文件，之后再拆出 `ui.c`、`alpm.c`
 之类的模块时不用改构建规则。
 
 ## 代码要点
@@ -58,6 +64,8 @@ build/         构建产物（已被 .gitignore 忽略）
 生成物只留在 `build/` 下，`make clean` 会一起清掉；修改字体后普通 `make` 会自动重新生成，
 也可以显式运行 `make font`。默认主题在 `sdlgui_init()` 里把该字体以第一个字号（20 pt）打开，
 存入 `theme.fonts[0]` / `theme.font_size = 1`，并在 `sdlgui_quit()` 中关闭。
+配置里写了 `fonts` 数组时，`theme_set()` 会用 fontconfig 把字体族名解析成实际字体文件，
+再按新主题的第一个字号打开并替换嵌入字体；任一步失败都会保留当前主题和字体。
 具体用法和 SDL3_ttf 打开方式见 `tools/README.md`。
 
 ## 加依赖：只需改 Makefile 一行
