@@ -188,16 +188,16 @@ typedef struct {
     int can_enter:1; // 允许多行显示
     int can_change:1; // 显示内容可以发生变化
 
-    char *context;    /* 借用调用方的字符串，create 不复制也不负责释放 */
+    TTF_Font *font;    // 行高由 TTF_GetFontHeight(font) 在绘制时读取
+    char *context;    // 借用调用方的字符串，create 不复制也不负责释放
 
     float width_limit;
-    float height_per_line;
     float height_limit;
 
     unsigned color;
 }draft_text_t;
 
-draft_text_t *draft_create_text(align_t align,char *context,float wl,float hl,float hpl,unsigned color);
+draft_text_t *draft_create_text(align_t align,TTF_Font *font,char *context,float wl,float hl,unsigned color);
 void draft_draw_text(void *l);
 
 typedef struct {

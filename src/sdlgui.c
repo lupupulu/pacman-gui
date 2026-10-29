@@ -1,5 +1,6 @@
 #include <SDL3/SDL.h>
 #include <SDL3_ttf/SDL_ttf.h>
+#include <fontconfig/fontconfig.h>
 #include "sdlgui.h"
 #include <stdlib.h>
 #include <memory.h>
@@ -12,6 +13,9 @@
 static SDL_Window *window=NULL;
 static SDL_Renderer *renderer=NULL;
 static layout_t root={.son_resizable=1,.update=update_layout};
+
+static int sdlgui_inited=0;
+static int fontconfig_ready=0;
 
 
 static float mouse_pos[]={0,0};   /* 鼠标在窗口内的位置 */
@@ -62,11 +66,22 @@ void sdlgui_init(const char *title,int width,int height,const char *iconpath){
 
     if(!SDL_CreateWindowAndRenderer(title,width,height,SDL_WINDOW_RESIZABLE,&window,&renderer)){
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"Create window/renderer failed: %s",SDL_GetError());
+        TTF_Quit();
         SDL_Quit();
         exit(1);
     }
 
+    /* 窗口/TTF 已经可用；后面的初始化失败要能通过 sdlgui_quit 回收 */
+    sdlgui_inited=1;
+
     SDL_SetRenderVSync(renderer,1);
+
+    if(!FcInit()){
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"FcInit failed");
+        sdlgui_quit();
+        exit(1);
+    }
+    fontconfig_ready=1;
 
     if(!theme_load_default_font()){
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"Failed to load the embedded default font");
@@ -89,10 +104,19 @@ void sdlgui_init(const char *title,int width,int height,const char *iconpath){
 
 }
 void sdlgui_quit(void){
+    if(!sdlgui_inited){
+        return ;
+    }
+    sdlgui_inited=0;
+
     delete_layout(&root);
     theme_quit();
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
+    if(fontconfig_ready){
+        FcFini();
+        fontconfig_ready=0;
+    }
     TTF_Quit();
     SDL_Quit();
 }
@@ -574,15 +598,14 @@ void draft_draw_rrect(void *p){
     if(draft_has_border(d->border_color)){
         draft_fill_rrect(d->x,d->y,d->width,d->height,d->r,draft_color(d->border_color));
         if(d->width>2.0f&&d->height>2.0f){
-            draft_fill_rrect(d->x+1.0f,d->y+1.0f,d->width-2.0f,d->height-2.0f,
-                             d->r-1.0f,draft_color(d->color));
+            draft_fill_rrect(d->x+1.0f,d->y+1.0f,d->width-2.0f,d->height-2.0f,d->r-1.0f,draft_color(d->color));
         }
     }else{
         draft_fill_rrect(d->x,d->y,d->width,d->height,d->r,draft_color(d->color));
     }
 }
 
-draft_text_t *draft_create_text(align_t align,char *context,float wl,float hl,float hpl,unsigned color){
+draft_text_t *draft_create_text(align_t align,TTF_Font *font,char *context,float wl,float hl,unsigned color){
     draft_text_t *d=calloc(1,sizeof(*d));
     if(d==NULL){
         return NULL;
@@ -594,9 +617,9 @@ draft_text_t *draft_create_text(align_t align,char *context,float wl,float hl,fl
     d->height=hl;
     d->can_enter=1;
     d->can_change=1;
+    d->font=font;
     d->context=context;
     d->width_limit=wl;
-    d->height_per_line=hpl;
     d->height_limit=hl;
     d->color=color;
     return d;
@@ -608,57 +631,73 @@ void draft_draw_text(void *p){
         return;
     }
     draft_update_layout(DRAFT_SUBLAYOUT(d));
-    if(d->context==NULL||d->context[0]=='\0'){
+    if(d->font==NULL||d->context==NULL||d->context[0]=='\0'){
         return;
     }
 
-    TTF_Font *base=get_font(0);
-    if(base==NULL){
-        return;
-    }
-
-    float ptsize=d->height_per_line>0.0f?d->height_per_line:get_text_size(0);
-    if(ptsize<=0.0f){
-        return;
-    }
-
-    TTF_Font *font=TTF_CopyFont(base);
-    if(font==NULL){
-        return;
-    }
-    if(!TTF_SetFontSize(font,ptsize)){
-        TTF_CloseFont(font);
+    /* 行高直接向 SDL_ttf 要，draft_text_t 不再保存每行高度 */
+    int line_height=TTF_GetFontHeight(d->font);
+    if(line_height<=0){
         return;
     }
 
     SDL_Color color=draft_color(d->color);
-    size_t length=strlen(d->context);
-    SDL_Surface *surface=NULL;
-    if(d->width_limit>0.0f){
-        surface=TTF_RenderText_Blended_Wrapped(font,d->context,length,color,
-                                               (int)(d->width_limit+0.5f));
-    }else{
-        surface=TTF_RenderText_Blended(font,d->context,length,color);
-    }
-    TTF_CloseFont(font);
+    const char *start=d->context;
+    float y=d->y;
+    float used=0.0f;
 
-    if(surface==NULL){
-        return;
-    }
+    while(start!=NULL&&*start!='\0'){
+        const char *end=d->can_enter?strchr(start,'\n'):NULL;
+        size_t length=end?(size_t)(end-start):strlen(start);
 
-    SDL_Texture *tex=SDL_CreateTextureFromSurface(renderer,surface);
-    if(tex!=NULL){
-        float w=(float)surface->w;
-        float h=(float)surface->h;
-        if(d->height_limit>0.0f&&h>d->height_limit){
-            h=d->height_limit;
+        SDL_Surface *surface=NULL;
+        if(length>0){
+            if(d->width_limit>0.0f){
+                surface=TTF_RenderText_Blended_Wrapped(d->font,start,length,color,
+                                                       (int)(d->width_limit+0.5f));
+            }else{
+                surface=TTF_RenderText_Blended(d->font,start,length,color);
+            }
         }
-        SDL_FRect src={.x=0,.y=0,.w=w,.h=h};
-        SDL_FRect dst={.x=d->x,.y=d->y,.w=w,.h=h};
-        SDL_RenderTexture(renderer,tex,&src,&dst);
-        SDL_DestroyTexture(tex);
+
+        /* 没有换行限制时按 TTF 行高逐行推进；自动换行时整块按 surface 高度推进 */
+        float advance=(float)line_height;
+        if(surface!=NULL){
+            float draw_height=(float)surface->h;
+            if(d->height_limit>0.0f){
+                float remain=d->height_limit-used;
+                if(remain<=0.0f){
+                    SDL_DestroySurface(surface);
+                    break;
+                }
+                if(draw_height>remain){
+                    draw_height=remain;
+                }
+            }
+
+            SDL_Texture *tex=SDL_CreateTextureFromSurface(renderer,surface);
+            if(tex!=NULL){
+                SDL_FRect src={.x=0,.y=0,.w=(float)surface->w,.h=draw_height};
+                SDL_FRect dst={.x=d->x,.y=y,.w=(float)surface->w,.h=draw_height};
+                SDL_RenderTexture(renderer,tex,&src,&dst);
+                SDL_DestroyTexture(tex);
+            }
+            if(d->width_limit>0.0f){
+                advance=(float)surface->h;
+            }
+            SDL_DestroySurface(surface);
+        }
+
+        used+=advance;
+        y+=advance;
+        if(d->height_limit>0.0f&&used>=d->height_limit){
+            break;
+        }
+        if(end==NULL||end[1]=='\0'){
+            break;
+        }
+        start=end+1;
     }
-    SDL_DestroySurface(surface);
 }
 
 static draft_texture_t *draft_create_texture(align_t align,SDL_Surface *surface){

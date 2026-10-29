@@ -14,6 +14,7 @@ static unsigned builtin_bright_text_color[]={0x000000FF};
 static unsigned builtin_dark_color[]={0x000000FF,0x7F7F7FFF,0x3399FFFF,0x1E90FFFF};
 static unsigned builtin_dark_text_color[]={0x000000FF};
 static unsigned builtin_text_size[]={20,16,14};
+static char *builtin_font_names[]={NULL};   /* NULL 表示使用内嵌字体 */
 
 /* 默认嵌入字体：由 tools/ttf_to_c.py 生成到 build/pacman_pixel_font.c。 */
 extern const unsigned char pacman_pixel_ttf[];
@@ -41,8 +42,8 @@ static theme_t theme={
     .name=NULL,   /* NULL：内联的内建主题；theme_set 成功后才换成加载进来的名字 */
     .now_slice=&builtin_theme_slice[0],
 
-    .fonts=NULL,
-    .font_size=0,
+    .fonts=builtin_font_names,
+    .font_size=1,
 
     .text=builtin_text_size,
     .text_size=3,
@@ -56,63 +57,55 @@ static theme_t theme={
 
 static toml_t theme_toml;
 
-/* FcInit() 只需要成功一次；重复调用会让 fontconfig 反复加载配置而泄漏 */
-static int fontconfig_ready=0;
 
 static void theme_free_loaded(void);   /* 定义在 theme_set 前面 */
+static void release_font_cache(void);
 
-/* 关闭并释放一组字体。必须在 TTF_Quit() 之前调用。 */
-static void free_fonts(TTF_Font **fonts,size_t size){
-    if(fonts!=NULL){
-        for(size_t i=0;i<size;i++){
-            if(fonts[i]!=NULL){
-                TTF_CloseFont(fonts[i]);
-            }
-        }
-        free(fonts);
+/* 复制字符串；源为 NULL 时返回 NULL */
+static char *theme_dup_string(const char *s){
+    if(s==NULL){
+        return NULL;
     }
+    size_t size=strlen(s)+1;
+    char *copy=malloc(size);
+    if(copy!=NULL){
+        memcpy(copy,s,size);
+    }
+    return copy;
 }
 
-/* 关闭并释放当前主题的字体 */
-static void free_theme_fonts(void){
-    free_fonts(theme.fonts,theme.font_size);
-    theme.fonts=NULL;
-    theme.font_size=0;
+/* 按指定字号打开内嵌字体，失败返回 NULL */
+static TTF_Font *create_embedded_font(float ptsize){
+    if(!TTF_WasInit()){
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"create_embedded_font: TTF 尚未初始化");
+        return NULL;
+    }
+    SDL_IOStream *io=SDL_IOFromConstMem(pacman_pixel_ttf,pacman_pixel_ttf_len);
+    if(io==NULL){
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"create_embedded_font: SDL_IOFromConstMem failed: %s",SDL_GetError());
+        return NULL;
+    }
+    TTF_Font *font=TTF_OpenFontIO(io,true,ptsize);
+    if(font==NULL){
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"create_embedded_font: TTF_OpenFontIO(%.0f) failed: %s",ptsize,SDL_GetError());
+    }
+    return font;
 }
 
-/* 把嵌入的默认字体打开一份，挂到默认主题上。
- * fonts 是字体族列表（默认配置里只有一个），text 是各级字号；
- * 这里用第一个字号打开，后续渲染可按需 TTF_SetFontSize()。 */
+
+/* 预热默认主题要用的内嵌字体；实际加载统一走 obtain_font() */
 int theme_load_default_font(void){
-    float ptsize=theme.text[0];
-    if(theme.text!=NULL&&theme.text_size>0){
+    float ptsize=20.0f;
+    if(theme.text!=NULL&&theme.text_size>0&&theme.text[0]>0){
         ptsize=(float)theme.text[0];
     }else{
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,"No text sizes configured, using 20 pt");
     }
 
-    TTF_Font **fonts=calloc(1,sizeof(*fonts));
-    if(fonts==NULL){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"calloc fonts failed: %s",SDL_GetError());
+    if(obtain_font(NULL,ptsize)==NULL){
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"Failed to obtain the embedded default font at %.0f pt",ptsize);
         return 0;
     }
-
-    SDL_IOStream *io=SDL_IOFromConstMem(pacman_pixel_ttf,pacman_pixel_ttf_len);
-    if(io==NULL){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"SDL_IOFromConstMem failed: %s",SDL_GetError());
-        free(fonts);
-        return 0;
-    }
-
-    fonts[0]=TTF_OpenFontIO(io,true,ptsize);
-    if(fonts[0]==NULL){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"TTF_OpenFontIO(%.0f) failed: %s",ptsize,SDL_GetError());
-        free(fonts);
-        return 0;
-    }
-
-    theme.fonts=fonts;
-    theme.font_size=1;
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,"Loaded embedded default font at %.0f pt",ptsize);
     return 1;
 }
@@ -127,6 +120,8 @@ static void theme_reset_builtin(void){
     theme.name=NULL;
     theme.version="0.0.1";
     theme.now_slice=&builtin_theme_slice[0];
+    theme.fonts=builtin_font_names;
+    theme.font_size=1;
     theme.text=builtin_text_size;
     theme.text_size=3;
     theme.item_height=32.0f;
@@ -136,7 +131,8 @@ static void theme_reset_builtin(void){
 }
 
 /* 释放主题里 malloc 出来的数组。
- * name/version/slice.name 指向 TOML 文档里的字符串，由 toml_unload 统一释放。 */
+ * name/version/slice.name 指向 TOML 文档里的字符串，由 toml_unload 统一释放。
+ * fonts 里的字体族名是 theme_set 复制出来的，需要逐个释放。 */
 static void theme_free_arrays(theme_t *th){
     if(th->slices!=NULL){
         for(size_t i=0;i<th->slice_size;i++){
@@ -146,9 +142,17 @@ static void theme_free_arrays(theme_t *th){
         free(th->slices);
         th->slices=NULL;
     }
+    if(th->fonts!=NULL&&th->fonts!=builtin_font_names){
+        for(size_t i=0;i<th->font_size;i++){
+            free(th->fonts[i]);
+        }
+        free(th->fonts);
+        th->fonts=NULL;
+    }
     free(th->text);
     th->text=NULL;
     th->slice_size=0;
+    th->font_size=0;
     th->text_size=0;
 }
 
@@ -279,10 +283,9 @@ void theme_set(const char *path,const char *file){
         return ;
     }
 
-    /* 新配置先完整读到 tmp，任何一项不合格都不碰正在使用的 theme/theme_toml */
+    /* 新配置先完整读到 tmp，任何一项不合格都不碰正在使用的 theme/theme_toml。
+       tmp.fonts 先保持 NULL，等 fonts 解析阶段再分配，避免失败时误释放当前主题的数组。 */
     theme_t tmp={0};
-    tmp.fonts=theme.fonts;           /* 默认沿用当前字体；配置里有 fonts 时再替换 */
-    tmp.font_size=theme.font_size;
     tmp.item_height=32.0f;
     tmp.rect_round_corner=0.0f;
 
@@ -336,7 +339,7 @@ void theme_set(const char *path,const char *file){
         tmp.text_size=sizeof(builtin_text_size)/sizeof(builtin_text_size[0]);
     }
 
-    /* 4. 字体族：写了就按名字用 fontconfig 找字体；没写就沿用当前字体 */
+    /* 4. 字体族：写了就记下族名并通过 obtain_font 获取；没写就沿用当前字体 */
     tp=toml_lookup(&t,"",0,"fonts");
     if(tp!=NULL){
         if(*tp!=TOML_ARRAY){
@@ -364,22 +367,38 @@ void theme_set(const char *path,const char *file){
                 goto fail;
             }
             const char *family=((toml_string_t *)item)->str;
-            tmp.fonts[i]=create_font(family);
+            tmp.fonts[i]=theme_dup_string(family);
             if(tmp.fonts[i]==NULL){
                 SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                             "theme_set: 加载字体 %s 失败",family);
+                             "theme_set: 复制字体名 %s 失败",family);
                 goto fail;
             }
-            /* create_font 用的是当前主题的字号，这里改成新主题的基础字号 */
-            if(!TTF_SetFontSize(tmp.fonts[i],(float)tmp.text[0])){
+            /* 统一从 obtain_font 入口取字体：命中缓存直接复用，找不到时回退内嵌字体 */
+            if(obtain_font(family,(float)tmp.text[0])==NULL){
                 SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                             "theme_set: 设置字体 %s 的大小失败: %s",family,SDL_GetError());
+                             "theme_set: 无法获取字体 %s",family);
                 goto fail;
             }
         }
     }else{
-        tmp.fonts=theme.fonts;
-        tmp.font_size=theme.font_size;
+        /* 没写 fonts：复制当前字体族名，避免旧主题释放后留下悬空指针 */
+        tmp.font_size=theme.font_size>0?theme.font_size:1;
+        tmp.fonts=calloc(tmp.font_size,sizeof(*tmp.fonts));
+        if(tmp.fonts==NULL){
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"theme_set: 分配字体数组失败");
+            goto fail;
+        }
+        for(size_t i=0;i<tmp.font_size;i++){
+            const char *family=(theme.fonts!=NULL&&i<theme.font_size)?theme.fonts[i]:NULL;
+            if(family!=NULL){
+                tmp.fonts[i]=theme_dup_string(family);
+                if(tmp.fonts[i]==NULL){
+                    SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                                 "theme_set: 复制字体名 %s 失败",family);
+                    goto fail;
+                }
+            }
+        }
     }
 
     /* 5. 尺寸参数 */
@@ -477,10 +496,8 @@ void theme_set(const char *path,const char *file){
     }
 
     /* 到这里 tmp 已经完整且有效，才释放旧配置并覆盖：
-       旧字体/旧数组先回收，再卸掉旧 TOML（tmp 里的字符串属于新 TOML，最后才接管） */
-    if(tmp.fonts!=theme.fonts){
-        free_theme_fonts();
-    }
+       旧数组先回收，再卸掉旧 TOML（tmp 里的字符串属于新 TOML，最后才接管）。
+       字体本身归缓存所有，不在这里关闭。 */
     theme_free_loaded();
     toml_unload(&theme_toml);
     theme_toml=t;
@@ -492,9 +509,6 @@ void theme_set(const char *path,const char *file){
     return ;
 
 fail:
-    if(tmp.fonts!=theme.fonts){
-        free_fonts(tmp.fonts,tmp.font_size);
-    }
     theme_free_arrays(&tmp);
     toml_unload(&t);
     SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
@@ -515,7 +529,14 @@ unsigned get_text_color(size_t n){
     return now->text_color[n>=now->text_color_size?now->text_color_size-1:n];
 }
 TTF_Font *get_font(size_t n){
-    return theme.fonts[n>=theme.font_size?theme.font_size-1:n];
+    float ptsize=20.0f;
+    if(theme.text!=NULL&&theme.text_size>0&&theme.text[0]>0){
+        ptsize=(float)theme.text[0];
+    }
+    if(theme.fonts==NULL||theme.font_size==0){
+        return obtain_font(NULL,ptsize);
+    }
+    return obtain_font(theme.fonts[n>=theme.font_size?theme.font_size-1:n],ptsize);
 }
 float get_text_size(size_t n){
     return theme.text[n>=theme.text_size?theme.text_size-1:n];
@@ -528,7 +549,15 @@ float get_rrect(void){
 }
 
 
-TTF_Font *create_font(const char *name){
+
+void theme_quit(void){
+    theme_free_loaded();
+    toml_unload(&theme_toml);
+    release_font_cache();
+}
+
+
+static TTF_Font *create_font(const char *name,float ptsize){
     if(name==NULL||name[0]=='\0'){
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"create_font: 字体名不能为空");
         return NULL;
@@ -536,13 +565,6 @@ TTF_Font *create_font(const char *name){
     if(!TTF_WasInit()){
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"create_font: TTF 尚未初始化");
         return NULL;
-    }
-    if(!fontconfig_ready){
-        if(!FcInit()){
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"create_font: fontconfig 初始化失败");
-            return NULL;
-        }
-        fontconfig_ready=1;
     }
 
     /* 把 "字体族[:style=...]" 解析成 fontconfig 模式，再匹配到具体字体文件 */
@@ -573,10 +595,7 @@ TTF_Font *create_font(const char *name){
     int index=0;
     FcPatternGetInteger(match,FC_INDEX,0,&index);
 
-    float ptsize=20.0f;
-    if(theme.text!=NULL&&theme.text_size>0&&theme.text[0]>0){
-        ptsize=(float)theme.text[0];
-    }
+
 
     SDL_PropertiesID props=SDL_CreateProperties();
     if(props==0){
@@ -605,15 +624,93 @@ TTF_Font *create_font(const char *name){
     return font;
 }
 
+typedef struct {
+    char *name;    /* NULL 表示内嵌字体 */
+    float ptsize;
 
+    TTF_Font *font;
+}font_pair;
 
+static font_pair *font_cache=NULL;
+static size_t font_cache_size=0;
 
-void theme_quit(void){
-    free_theme_fonts();
-    theme_free_loaded();
-    toml_unload(&theme_toml);
-    if(fontconfig_ready){
-        FcFini();
-        fontconfig_ready=0;
+static font_pair *font_cache_find(const char *name,float ptsize){
+    for(size_t i=0;i<font_cache_size;i++){
+        font_pair *entry=&font_cache[i];
+        if(fabsf(entry->ptsize-ptsize)>0.01f){
+            continue;
+        }
+        if(name==NULL||entry->name==NULL){
+            if(name==NULL&&entry->name==NULL){
+                return entry;
+            }
+        }else if(strcmp(name,entry->name)==0){
+            return entry;
+        }
     }
+    return NULL;
+}
+
+/* 关闭缓存里的所有字体；必须在 TTF_Quit() 之前调用 */
+static void release_font_cache(void){
+    for(size_t i=0;i<font_cache_size;i++){
+        if(font_cache[i].font!=NULL){
+            TTF_CloseFont(font_cache[i].font);
+        }
+        free(font_cache[i].name);
+    }
+    free(font_cache);
+    font_cache=NULL;
+    font_cache_size=0;
+}
+
+TTF_Font *obtain_font(const char *name,float ptsize){
+    if(name!=NULL&&name[0]=='\0'){
+        name=NULL;
+    }
+    if(!isfinite(ptsize)||ptsize<=0.0f){
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"obtain_font: 无效的字号 %.1f",(double)ptsize);
+        return NULL;
+    }
+
+    font_pair *hit=font_cache_find(name,ptsize);
+    if(hit!=NULL){
+        return hit->font;
+    }
+
+    TTF_Font *font=NULL;
+    if(name!=NULL){
+        font=create_font(name,ptsize);
+    }
+    if(font==NULL){
+        font=create_embedded_font(ptsize);
+        if(font==NULL){
+            return NULL;
+        }
+        if(name!=NULL){
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "obtain_font: 找不到字体 %s，使用内嵌字体",name);
+        }
+    }
+
+    char *name_copy=theme_dup_string(name);
+    if(name!=NULL&&name_copy==NULL){
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"obtain_font: 复制字体名失败");
+        TTF_CloseFont(font);
+        return NULL;
+    }
+
+    font_pair *entries=realloc(font_cache,(font_cache_size+1)*sizeof(*entries));
+    if(entries==NULL){
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"obtain_font: 扩容字体缓存失败");
+        free(name_copy);
+        TTF_CloseFont(font);
+        return NULL;
+    }
+    font_cache=entries;
+    font_cache[font_cache_size].name=name_copy;
+    font_cache[font_cache_size].ptsize=ptsize;
+    font_cache[font_cache_size].font=font;
+    font_cache_size++;
+    return font;
 }

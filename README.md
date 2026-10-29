@@ -62,10 +62,10 @@ build/         构建产物（已被 .gitignore 忽略）
 `assets/PacmanPixel-ASCII.ttf` 在构建时由 `tools/ttf_to_c.py` 转成
 `build/pacman_pixel_font.c`，随后编译并自动链接进可执行文件，运行时不需要外部字体文件。
 生成物只留在 `build/` 下，`make clean` 会一起清掉；修改字体后普通 `make` 会自动重新生成，
-也可以显式运行 `make font`。默认主题在 `sdlgui_init()` 里把该字体以第一个字号（20 pt）打开，
-存入 `theme.fonts[0]` / `theme.font_size = 1`，并在 `sdlgui_quit()` 中关闭。
-配置里写了 `fonts` 数组时，`theme_set()` 会用 fontconfig 把字体族名解析成实际字体文件，
-再按新主题的第一个字号打开并替换嵌入字体；任一步失败都会保留当前主题和字体。
+也可以显式运行 `make font`。`sdlgui_init()` 会初始化 fontconfig，并通过 `obtain_font()` 以第一个字号（20 pt）预热内嵌字体；
+`theme.fonts` 保存字体族名，实际 `TTF_Font` 由字体缓存按“族名 + 字号”持有。
+配置里写了 `fonts` 数组时，`theme_set()` 统一走 `obtain_font()`：命中缓存直接复用，找不到字体时回退内嵌字体；
+缓存中的字体在 `sdlgui_quit()` / `theme_quit()` 中统一关闭。
 具体用法和 SDL3_ttf 打开方式见 `tools/README.md`。
 
 ## 加依赖：只需改 Makefile 一行

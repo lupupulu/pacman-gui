@@ -29,7 +29,7 @@ typedef struct {
     char *version;
     theme_slice_t *now_slice;
 
-    TTF_Font **fonts;   /* 已加载的字体族；默认是 sdlgui_init() 填入的嵌入字体，theme_set 可按 fonts 配置替换 */
+    char **fonts;       /* 字体族名；NULL 项表示使用内嵌字体 */
     size_t font_size;
 
     unsigned *text;
@@ -46,18 +46,21 @@ typedef struct {
 int theme_load_default_font(void);
 void theme_quit(void);
 
-/* 读取主题配置；配置里带 fonts 时会用 fontconfig 打开字体，需在 sdlgui_init() 之后调用 */
+/* 读取主题配置；配置里带 fonts 时通过 obtain_font() 取字体，需在 sdlgui_init() 之后调用 */
 void theme_set(const char *path,const char *file);
 void set_theme(const char *path,const char *file);   /* theme_set 的别名 */
 
-/* 按字体族名用 fontconfig 找到字体文件，再按当前主题的基础字号打开 */
-TTF_Font *create_font(const char *name);
-
 unsigned get_color(size_t n);
 unsigned get_text_color(size_t n);
-TTF_Font *get_font(size_t n);
+TTF_Font *get_font(size_t n);   /* 返回缓存持有的字体，不要 TTF_CloseFont() */
 float get_text_size(size_t n);
 float get_height(void);
 float get_rrect(void);
+
+
+/* 按字体族名和字号取字体：命中缓存直接返回；找不到时返回内嵌字体。
+ * 返回的 TTF_Font 归缓存所有，调用方不要 TTF_CloseFont()。 */
+TTF_Font *obtain_font(const char *name,float ptsize);
+
 
 #endif
