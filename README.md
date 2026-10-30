@@ -6,7 +6,7 @@
 
 ## 依赖
 
-- C17 编译器（gcc / clang）
+- C99 编译器（gcc / clang）
 - SDL3 开发包（本机 3.4.18）、pkg-config、make
 - fontconfig 开发包（按配置里的字体族名查找字体文件）
 - Python 3.10+（构建时运行 `tools/ttf_to_c.py`，把字体嵌成 C）
@@ -67,6 +67,13 @@ build/         构建产物（已被 .gitignore 忽略）
 配置里写了 `fonts` 数组时，`theme_set()` 统一走 `obtain_font()`：命中缓存直接复用，找不到字体时回退内嵌字体；
 缓存中的字体在 `sdlgui_quit()` / `theme_quit()` 中统一关闭。
 具体用法和 SDL3_ttf 打开方式见 `tools/README.md`。
+
+## 本地化
+
+日志和错误消息的 msgid 统一使用英语，通过 gettext 本地化，textdomain 为 `pacman-gui`。
+默认从当前目录的 `locale/<lang>/LC_MESSAGES/pacman-gui.mo` 加载，也可以在编译时用
+`-DSDLGUI_LOCALEDIR=\"...\"` 指定其他目录。`sdlgui_init()` 先把 locale 固定为 C，
+内置主题保持英文；`theme_set()` 成功加载主题后才按环境 locale 调用 gettext。
 
 ## 加依赖：只需改 Makefile 一行
 

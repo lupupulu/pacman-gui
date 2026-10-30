@@ -102,8 +102,8 @@ void delete_layout(layout_t *l);
 
 void update_sons(void *l);
 void update_layout_only(void *l); // 仅更新布局
-void update_layout(void *l);
-void mouse_update_sons(void *l);
+void layout_update(void *l);
+void layout_mouse(void *l);
 
 
 typedef struct {
@@ -114,41 +114,19 @@ void rect_draw(void *l);
 layout_rect_t *create_layout_rect(void *parent,float w,float h,align_t align);
 
 
-typedef int(*check_func)(void*,float x,float y);
-
-typedef struct {
-    check_func check;
-    SUBLAYOUT_DEF
-}default_sublayout_t; // 子布局，用作判定框等
-typedef struct {
-    check_func check;
-    float points[3][2];
-}triangle_sublayout_t;
-typedef struct {
-    check_func check;
-    SUBLAYOUT_DEF
-    float r;  // 圆角半径
-}rrect_sublayout_t;
-
-/* 每种判定框一个 check 函数，签名与 check_func 一致：
-   参数是子布局自己和鼠标的窗口坐标；子布局的 x/y 已经是窗口绝对坐标 */
-int check_rect(void *sublayout,float x,float y);   /* 矩形 */
-int check_triangle(void *sublayout,float x,float y);  /* 三角形 */
-int check_rrect(void *sublayout,float x,float y);     /* 圆角矩形 */
-
-/* 圆形，判定框用 default_sublayout_t：宽高不等时圆要选一个直径
-   align_w：高向宽看齐，直径 = width
-   align_h：宽向高看齐，直径 = height
-   两者圆心都取判定框中心 */
-int check_circle_w(void *sublayout,float x,float y);
-int check_circle_h(void *sublayout,float x,float y);
-#define check_circle check_circle_h
 
 
 typedef void(*animate_func)(void*);
 
 typedef struct {
     draw_func draw;
+    clear_func clear;
+    SUBLAYOUT_DEF
+}draft_t;
+
+typedef struct {
+    draw_func draw;
+    clear_func clear;
     SUBLAYOUT_DEF
     unsigned color;
     unsigned border_color;
@@ -161,6 +139,7 @@ void draft_draw_circle_h(void *l);
 
 typedef struct {
     draw_func draw;
+    clear_func clear;
     SUBLAYOUT_DEF
     float points[3][2];   /* 以包围盒左上角为原点的局部坐标 */
     unsigned color;
@@ -172,6 +151,7 @@ void draft_draw_triangle(void *l);
 
 typedef struct {
     draw_func draw;
+    clear_func clear;
     SUBLAYOUT_DEF
     float r;  // 圆角半径
     unsigned color;
@@ -183,6 +163,7 @@ void draft_draw_rrect(void *l);
 
 typedef struct {
     draw_func draw;
+    clear_func clear;
     SUBLAYOUT_DEF
 
     int can_enter:1; // 允许多行显示
@@ -195,13 +176,19 @@ typedef struct {
     float height_limit;
 
     unsigned color;
+
+    SDL_Texture *cache;   // can_change=0 时的整段缓存纹理
+    float cache_width;
+    float cache_height;
 }draft_text_t;
 
 draft_text_t *draft_create_text(align_t align,TTF_Font *font,char *context,float wl,float hl,unsigned color);
 void draft_draw_text(void *l);
+void draft_text_clear(draft_text_t *l);   // 释放 can_change=0 的缓存纹理
 
 typedef struct {
     draw_func draw;
+    clear_func clear;
     SUBLAYOUT_DEF
 
     SDL_Texture *tex;
@@ -210,17 +197,72 @@ typedef struct {
 draft_texture_t *draft_create_picture_from_memory(align_t align,const char *file,size_t size);
 draft_texture_t *draft_create_picture(align_t align,const char *path);
 void draft_draw_texture(void *l);
+void draft_texture_clear(draft_texture_t *l);   // 释放贴图
 
 typedef struct {
     layout_t l;
 
     int draft_resizable:1;
-    draw_func **drafts;
+    draft_t **drafts;
     size_t draft_size;
 
     animate_func animation;
-    double degree;  // 动画完成程度
-}layout_draw_t;
+    size_t timer;  // 计时器
+    int status;  // 状态，0为不刷新动画
+}layout_animation_t;
+
+/* 可变参数是若干 draft 指针，以 NULL 结尾；draft 所有权交给 animation，
+ * clear 时会释放 draft 及其缓存纹理/贴图。 */
+layout_animation_t *create_layout_animation(void *parent,animate_func animation,...);
+
+void animation_draw(void *l);
+void animation_clear(void *l);
+
+
+
+
+
+
+/* 每种判定框一个 check 函数，签名与 bbox_check_func 一致：
+   参数是子布局自己和鼠标的窗口坐标；子布局的 x/y 已经是窗口绝对坐标 */
+typedef int(*bbox_check_func)(void*,float x,float y);
+
+typedef struct {
+    bbox_check_func check;
+    SUBLAYOUT_DEF
+}bbox_t; // 判定框公共前缀
+
+typedef bbox_t bbox_default_t; // 默认判定框（矩形/圆）
+
+bbox_default_t *bbox_create_default(bbox_check_func check,align_t align,float w,float h);
+int bbox_check_rect(void *sl,float x,float y);   /* 矩形 */
+/* 圆形，判定框用 bbox_default_t：宽高不等时圆要选一个直径
+   align_w：高向宽看齐，直径 = width
+   align_h：宽向高看齐，直径 = height
+   两者圆心都取判定框中心 */
+int bbox_check_circle_w(void *sublayout,float x,float y);
+int bbox_check_circle_h(void *sublayout,float x,float y);
+#define bbox_check_circle bbox_check_circle_h
+
+
+typedef struct {
+    bbox_check_func check;
+    SUBLAYOUT_DEF
+    float points[3][2];   /* 以包围盒左上角为原点的局部坐标 */
+}bbox_triangle_t;
+
+bbox_triangle_t *bbox_create_triangle(align_t align,float *vertex);
+int bbox_check_triangle(void *sublayout,float x,float y);  /* 三角形 */
+
+
+typedef struct {
+    bbox_check_func check;
+    SUBLAYOUT_DEF
+    float r;  // 圆角半径
+}bbox_rrect_t;
+
+bbox_rrect_t *bbox_create_rrect(align_t align,float w,float h,float r);
+int bbox_check_rrect(void *sublayout,float x,float y);     /* 圆角矩形 */
 
 
 typedef void(*button_callback_func)(void *data);
@@ -230,14 +272,17 @@ typedef struct {
     unsigned left_last_state:1; // 鼠标左键上次状态
     unsigned need_bounce:2;     // 是否等到鼠标回弹再触发 0:否 1:无论回弹时在哪，回弹即触发 2:只有在子布局内回弹才触发
 
-    check_func **sublayouts;
-    size_t sublayouts_size;
+    bbox_t **bboxes;
+    size_t bboxes_size;
 
     button_callback_func callback;
     void *data;
 }layout_button_t;
 
-layout_button_t *create_layout_button(void *parent,float w,float h,align_t align,int need_bounce,button_callback_func callback,void *data);
+/* 可变参数是若干 bbox 指针，以 NULL 结尾；所有权交给按钮，button_clear() 会释放。 */
+layout_button_t *create_layout_button(void *parent,float w,float h,align_t align,button_callback_func callback,void *data,...);
+
+
 
 void button_clear(void *l);
 void button_mouse(void *l);

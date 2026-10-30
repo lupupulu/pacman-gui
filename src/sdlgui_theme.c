@@ -5,6 +5,7 @@
 #include <string.h>
 #include <math.h>
 #include "sdlgui_theme.h"
+#include "sdlgui_i18n.h"
 #include "CDS/confc.h"
 
 
@@ -77,17 +78,17 @@ static char *theme_dup_string(const char *s){
 /* 按指定字号打开内嵌字体，失败返回 NULL */
 static TTF_Font *create_embedded_font(float ptsize){
     if(!TTF_WasInit()){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"create_embedded_font: TTF 尚未初始化");
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("create_embedded_font: TTF is not initialized"));
         return NULL;
     }
     SDL_IOStream *io=SDL_IOFromConstMem(pacman_pixel_ttf,pacman_pixel_ttf_len);
     if(io==NULL){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"create_embedded_font: SDL_IOFromConstMem failed: %s",SDL_GetError());
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("create_embedded_font: SDL_IOFromConstMem failed: %s"),SDL_GetError());
         return NULL;
     }
     TTF_Font *font=TTF_OpenFontIO(io,true,ptsize);
     if(font==NULL){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"create_embedded_font: TTF_OpenFontIO(%.0f) failed: %s",ptsize,SDL_GetError());
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("create_embedded_font: TTF_OpenFontIO(%.0f) failed: %s"),ptsize,SDL_GetError());
     }
     return font;
 }
@@ -99,14 +100,14 @@ int theme_load_default_font(void){
     if(theme.text!=NULL&&theme.text_size>0&&theme.text[0]>0){
         ptsize=(float)theme.text[0];
     }else{
-        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,"No text sizes configured, using 20 pt");
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,_("No text sizes configured, using 20 pt"));
     }
 
     if(obtain_font(NULL,ptsize)==NULL){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"Failed to obtain the embedded default font at %.0f pt",ptsize);
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("Failed to obtain the embedded default font at %.0f pt"),ptsize);
         return 0;
     }
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,"Loaded embedded default font at %.0f pt",ptsize);
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,_("Loaded embedded default font at %.0f pt"),ptsize);
     return 1;
 }
 
@@ -187,20 +188,20 @@ static unsigned *theme_read_colors(toml_type_t *tp,const char *slice,const char 
     *out_size=0;
     if(tp==NULL||*tp!=TOML_ARRAY){
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     "theme_set: 主题 %s 的 %s 必须是数组",slice,key);
+                     _("theme_set: theme %s key %s must be an array"),slice,key);
         return NULL;
     }
     toml_array_t *arr=(toml_array_t *)tp;
     if(arr->size==0){
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     "theme_set: 主题 %s 的 %s 不能为空",slice,key);
+                     _("theme_set: theme %s key %s must not be empty"),slice,key);
         return NULL;
     }
 
     unsigned *colors=malloc(arr->size*sizeof(*colors));
     if(colors==NULL){
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     "theme_set: 为 %s.%s 分配内存失败",slice,key);
+                     _("theme_set: failed to allocate memory for %s.%s"),slice,key);
         return NULL;
     }
 
@@ -208,14 +209,14 @@ static unsigned *theme_read_colors(toml_type_t *tp,const char *slice,const char 
         toml_type_t *item=arr->items[i];
         if(item==NULL||*item!=TOML_INTEGER){
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                         "theme_set: %s.%s[%zu] 必须是整数",slice,key,i);
+                         _("theme_set: %s.%s[%zu] must be an integer"),slice,key,i);
             free(colors);
             return NULL;
         }
         long v=((toml_integer_t *)item)->v;
         if(v<0||v>0xFFFFFFFFL){
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                         "theme_set: %s.%s[%zu] 超出 0x00000000~0xFFFFFFFF",slice,key,i);
+                         _("theme_set: %s.%s[%zu] is outside 0x00000000..0xFFFFFFFF"),slice,key,i);
             free(colors);
             return NULL;
         }
@@ -230,18 +231,18 @@ static unsigned *theme_read_colors(toml_type_t *tp,const char *slice,const char 
 static unsigned *theme_read_text_sizes(toml_type_t *tp,size_t *out_size){
     *out_size=0;
     if(tp==NULL||*tp!=TOML_ARRAY){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"theme_set: text_size 必须是数组");
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("theme_set: text_size must be an array"));
         return NULL;
     }
     toml_array_t *arr=(toml_array_t *)tp;
     if(arr->size==0){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"theme_set: text_size 不能为空");
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("theme_set: text_size must not be empty"));
         return NULL;
     }
 
     unsigned *sizes=malloc(arr->size*sizeof(*sizes));
     if(sizes==NULL){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"theme_set: 为 text_size 分配内存失败");
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("theme_set: failed to allocate memory for text_size"));
         return NULL;
     }
 
@@ -249,13 +250,13 @@ static unsigned *theme_read_text_sizes(toml_type_t *tp,size_t *out_size){
         double v=0.0;
         if(!theme_read_number(arr->items[i],&v)){
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                         "theme_set: text_size[%zu] 必须是数字",i);
+                         _("theme_set: text_size[%zu] must be a number"),i);
             free(sizes);
             return NULL;
         }
         if(!isfinite(v)||v<1.0||v>1000.0){
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                         "theme_set: text_size[%zu] 必须在 1~1000 pt 之间",i);
+                         _("theme_set: text_size[%zu] must be between 1 and 1000 pt"),i);
             free(sizes);
             return NULL;
         }
@@ -272,14 +273,14 @@ void theme_set(const char *path,const char *file){
     char *f=confc_find_path(path,file);
     if(f==NULL){
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     "theme_set: 在 %s 下找不到 %s",path?path:"(null)",file?file:"(null)");
+                     _("theme_set: cannot find %s under %s"),file?file:"(null)",path?path:"(null)");
         return ;
     }
 
     toml_t t=toml_load(f);
     free(f);
     if(t.size==0){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"theme_set: 解析 %s 失败",file);
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("theme_set: failed to parse %s"),file);
         return ;
     }
 
@@ -295,7 +296,7 @@ void theme_set(const char *path,const char *file){
     tp=toml_lookup(&t,"",0,"version");
     if(tp==NULL||*tp!=TOML_STRING){
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     "theme_set: %s 缺少字符串类型的 version",file);
+                     _("theme_set: %s is missing a string version"),file);
         goto fail;
     }
     const char *version=((toml_string_t *)tp)->str;
@@ -308,7 +309,7 @@ void theme_set(const char *path,const char *file){
     }
     if(!supported){
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     "theme_set: 不支持的配置版本 %s",version);
+                     _("theme_set: unsupported configuration version %s"),version);
         goto fail;
     }
     tmp.version=(char *)version;
@@ -317,7 +318,7 @@ void theme_set(const char *path,const char *file){
     tp=toml_lookup(&t,"",0,"name");
     if(tp==NULL||*tp!=TOML_STRING){
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     "theme_set: %s 缺少字符串类型的 name",file);
+                     _("theme_set: %s is missing a string name"),file);
         goto fail;
     }
     tmp.name=((toml_string_t *)tp)->str;
@@ -332,7 +333,7 @@ void theme_set(const char *path,const char *file){
     }else{
         tmp.text=malloc(sizeof(builtin_text_size));
         if(tmp.text==NULL){
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"theme_set: 分配默认字号失败");
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("theme_set: failed to allocate default text sizes"));
             goto fail;
         }
         memcpy(tmp.text,builtin_text_size,sizeof(builtin_text_size));
@@ -343,18 +344,18 @@ void theme_set(const char *path,const char *file){
     tp=toml_lookup(&t,"",0,"fonts");
     if(tp!=NULL){
         if(*tp!=TOML_ARRAY){
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"theme_set: fonts 必须是数组");
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("theme_set: fonts must be an array"));
             goto fail;
         }
         toml_array_t *arr=(toml_array_t *)tp;
         if(arr->size==0){
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"theme_set: fonts 不能为空");
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("theme_set: fonts must not be empty"));
             goto fail;
         }
 
         tmp.fonts=calloc(arr->size,sizeof(*tmp.fonts));
         if(tmp.fonts==NULL){
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"theme_set: 分配字体数组失败");
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("theme_set: failed to allocate font array"));
             goto fail;
         }
         tmp.font_size=arr->size;
@@ -363,20 +364,20 @@ void theme_set(const char *path,const char *file){
             toml_type_t *item=arr->items[i];
             if(item==NULL||*item!=TOML_STRING||((toml_string_t *)item)->str[0]=='\0'){
                 SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                             "theme_set: fonts[%zu] 必须是非空字符串",i);
+                             _("theme_set: fonts[%zu] must be a non-empty string"),i);
                 goto fail;
             }
             const char *family=((toml_string_t *)item)->str;
             tmp.fonts[i]=theme_dup_string(family);
             if(tmp.fonts[i]==NULL){
                 SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                             "theme_set: 复制字体名 %s 失败",family);
+                             _("theme_set: failed to copy font name %s"),family);
                 goto fail;
             }
             /* 统一从 obtain_font 入口取字体：命中缓存直接复用，找不到时回退内嵌字体 */
             if(obtain_font(family,(float)tmp.text[0])==NULL){
                 SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                             "theme_set: 无法获取字体 %s",family);
+                             _("theme_set: failed to obtain font %s"),family);
                 goto fail;
             }
         }
@@ -385,7 +386,7 @@ void theme_set(const char *path,const char *file){
         tmp.font_size=theme.font_size>0?theme.font_size:1;
         tmp.fonts=calloc(tmp.font_size,sizeof(*tmp.fonts));
         if(tmp.fonts==NULL){
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"theme_set: 分配字体数组失败");
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("theme_set: failed to allocate font array"));
             goto fail;
         }
         for(size_t i=0;i<tmp.font_size;i++){
@@ -394,7 +395,7 @@ void theme_set(const char *path,const char *file){
                 tmp.fonts[i]=theme_dup_string(family);
                 if(tmp.fonts[i]==NULL){
                     SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                                 "theme_set: 复制字体名 %s 失败",family);
+                                 _("theme_set: failed to copy font name %s"),family);
                     goto fail;
                 }
             }
@@ -406,7 +407,7 @@ void theme_set(const char *path,const char *file){
     if(tp!=NULL){
         double v=0.0;
         if(!theme_read_number(tp,&v)||!isfinite(v)||v<=0.0){
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"theme_set: item_height 必须是正数");
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("theme_set: item_height must be positive"));
             goto fail;
         }
         tmp.item_height=(float)v;
@@ -415,7 +416,7 @@ void theme_set(const char *path,const char *file){
     if(tp!=NULL){
         double v=0.0;
         if(!theme_read_number(tp,&v)||!isfinite(v)||v<0.0){
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"theme_set: rect_round_corner 必须是非负数");
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("theme_set: rect_round_corner must be non-negative"));
             goto fail;
         }
         tmp.rect_round_corner=(float)v;
@@ -434,13 +435,13 @@ void theme_set(const char *path,const char *file){
     }
     if(slice_count==0){
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     "theme_set: %s 里没有主题切片",file);
+                     _("theme_set: %s contains no theme slices"),file);
         goto fail;
     }
 
     tmp.slices=calloc(slice_count,sizeof(*tmp.slices));
     if(tmp.slices==NULL){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"theme_set: 分配主题切片失败");
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("theme_set: failed to allocate theme slices"));
         goto fail;
     }
     tmp.slice_size=slice_count;
@@ -476,7 +477,7 @@ void theme_set(const char *path,const char *file){
     tp=toml_lookup(&t,"",0,"default");
     if(tp!=NULL){
         if(*tp!=TOML_STRING){
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"theme_set: default 必须是字符串");
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("theme_set: default must be a string"));
             goto fail;
         }
         const char *default_name=((toml_string_t *)tp)->str;
@@ -490,7 +491,7 @@ void theme_set(const char *path,const char *file){
         }
         if(!found){
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                         "theme_set: default 指定的主题 %s 不存在",default_name);
+                         _("theme_set: default theme %s does not exist"),default_name);
             goto fail;
         }
     }
@@ -503,16 +504,19 @@ void theme_set(const char *path,const char *file){
     theme_toml=t;
     theme=tmp;
 
+    /* 主题已经加载成功，这时才按环境 locale 启用 gettext */
+    sdlgui_i18n_init();
+
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
-                "theme_set: 已从 %s 加载主题 %s（%zu 个切片，%zu 个字体）",
-                file,theme.name,theme.slice_size,theme.font_size);
+                _("theme_set: loaded theme %s from %s (%zu slices, %zu fonts)"),
+                theme.name,file,theme.slice_size,theme.font_size);
     return ;
 
 fail:
     theme_free_arrays(&tmp);
     toml_unload(&t);
     SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                 "theme_set: %s 未通过检查，继续使用当前主题",file);
+                 _("theme_set: %s failed validation; keeping the current theme"),file);
 }
 
 void set_theme(const char *path,const char *file){
@@ -559,18 +563,18 @@ void theme_quit(void){
 
 static TTF_Font *create_font(const char *name,float ptsize){
     if(name==NULL||name[0]=='\0'){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"create_font: 字体名不能为空");
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("create_font: font name must not be empty"));
         return NULL;
     }
     if(!TTF_WasInit()){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"create_font: TTF 尚未初始化");
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("create_font: TTF is not initialized"));
         return NULL;
     }
 
     /* 把 "字体族[:style=...]" 解析成 fontconfig 模式，再匹配到具体字体文件 */
     FcPattern *pattern=FcNameParse((const FcChar8 *)name);
     if(pattern==NULL){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"create_font: 无法解析字体模式 %s",name);
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("create_font: failed to parse font pattern %s"),name);
         return NULL;
     }
     FcConfigSubstitute(NULL,pattern,FcMatchPattern);
@@ -580,13 +584,13 @@ static TTF_Font *create_font(const char *name,float ptsize){
     FcPattern *match=FcFontMatch(NULL,pattern,&result);
     FcPatternDestroy(pattern);
     if(match==NULL){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"create_font: fontconfig 找不到字体 %s (result %d)",name,(int)result);
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("create_font: fontconfig could not find font %s (result %d)"),name,(int)result);
         return NULL;
     }
 
     FcChar8 *file=NULL;
     if(FcPatternGetString(match,FC_FILE,0,&file)!=FcResultMatch||file==NULL){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"create_font: 字体 %s 的匹配结果没有文件路径",name);
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("create_font: match for font %s has no file path"),name);
         FcPatternDestroy(match);
         return NULL;
     }
@@ -599,7 +603,7 @@ static TTF_Font *create_font(const char *name,float ptsize){
 
     SDL_PropertiesID props=SDL_CreateProperties();
     if(props==0){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"create_font: 创建字体属性失败: %s",SDL_GetError());
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("create_font: failed to create font properties: %s"),SDL_GetError());
         FcPatternDestroy(match);
         return NULL;
     }
@@ -610,14 +614,14 @@ static TTF_Font *create_font(const char *name,float ptsize){
        SDL_SetNumberProperty(props,TTF_PROP_FONT_CREATE_FACE_NUMBER,(Sint64)index)){
         font=TTF_OpenFontWithProperties(props);
     }else{
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"create_font: 设置字体属性失败: %s",SDL_GetError());
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("create_font: failed to set font properties: %s"),SDL_GetError());
     }
     SDL_DestroyProperties(props);
 
     if(font==NULL){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"create_font: 打开字体 %s (index %d) 失败: %s",(const char *)file,index,SDL_GetError());
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("create_font: failed to open font %s (index %d): %s"),(const char *)file,index,SDL_GetError());
     }else{
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,"create_font: %s -> %s (index %d, %.0f pt)",name,(const char *)file,index,ptsize);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,_("create_font: %s -> %s (index %d, %.0f pt)"),name,(const char *)file,index,ptsize);
     }
 
     FcPatternDestroy(match);
@@ -669,7 +673,7 @@ TTF_Font *obtain_font(const char *name,float ptsize){
         name=NULL;
     }
     if(!isfinite(ptsize)||ptsize<=0.0f){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"obtain_font: 无效的字号 %.1f",(double)ptsize);
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("obtain_font: invalid point size %.1f"),(double)ptsize);
         return NULL;
     }
 
@@ -689,20 +693,20 @@ TTF_Font *obtain_font(const char *name,float ptsize){
         }
         if(name!=NULL){
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                        "obtain_font: 找不到字体 %s，使用内嵌字体",name);
+                        _("obtain_font: font %s not found; using the embedded font"),name);
         }
     }
 
     char *name_copy=theme_dup_string(name);
     if(name!=NULL&&name_copy==NULL){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"obtain_font: 复制字体名失败");
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("obtain_font: failed to copy font name"));
         TTF_CloseFont(font);
         return NULL;
     }
 
     font_pair *entries=realloc(font_cache,(font_cache_size+1)*sizeof(*entries));
     if(entries==NULL){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,"obtain_font: 扩容字体缓存失败");
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("obtain_font: failed to grow the font cache"));
         free(name_copy);
         TTF_CloseFont(font);
         return NULL;
