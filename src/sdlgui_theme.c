@@ -6,14 +6,15 @@
 #include <math.h>
 #include "sdlgui_theme.h"
 #include "sdlgui_i18n.h"
+#include "CDS/darray.h"
 #include "CDS/confc.h"
 
 
 /* theme_t 里的 color/text 是 unsigned *，内建主题需要各自准备静态后备数组。 */
-static unsigned builtin_bright_color[]={0xFFFFFFFF,0x7F7F7FFF,0x1E90FFFF,0x1E90FFFF};
-static unsigned builtin_bright_text_color[]={0x000000FF};
-static unsigned builtin_dark_color[]={0x000000FF,0x7F7F7FFF,0x3399FFFF,0x1E90FFFF};
-static unsigned builtin_dark_text_color[]={0x000000FF};
+static unsigned builtin_bright_color[]={0xEFF1F5FF,0xCCD0DAFF,0x8CAAEEFF,0xFE640BFF};
+static unsigned builtin_bright_text_color[]={0x4C4F69FF};
+static unsigned builtin_dark_color[]={0x1E1E2EFF,0x313244FF,0x1E66F5FF,0xFAB387FF};
+static unsigned builtin_dark_text_color[]={0xCDD6F4FF};
 static unsigned builtin_text_size[]={20,16,14};
 static char *builtin_font_names[]={NULL};   /* NULL 表示使用内嵌字体 */
 
@@ -27,14 +28,16 @@ static theme_slice_t builtin_theme_slice[]={
         .color=builtin_bright_color,
         .color_size=4,
         .text_color=builtin_bright_text_color,
-        .text_color_size=1
+        .text_color_size=1,
+        .divider_color=0xBCC0CCFF
     },
     {
         .name="Dark",
         .color=builtin_dark_color,
         .color_size=4,
         .text_color=builtin_dark_text_color,
-        .text_color_size=1
+        .text_color_size=1,
+        .divider_color=0x45475AFF
     }
 };
 
@@ -112,7 +115,7 @@ int theme_load_default_font(void){
 }
 
 /* ---- 主题读取 ----
-   结构见 assets/sdlgui_config.toml：根层是全局设置，每个 [表名] 是一套配色切片。 */
+   结构见 assets/Default/config.toml：根层是全局设置，每个 [表名] 是一套配色切片。 */
 
 static const char *allow_version[]={"0.0.1"};
 
@@ -225,6 +228,23 @@ static unsigned *theme_read_colors(toml_type_t *tp,const char *slice,const char 
 
     *out_size=arr->size;
     return colors;
+}
+
+/* 单个颜色：0xRRGGBBAA 范围内的整数 */
+static int theme_read_color(toml_type_t *tp,const char *slice,const char *key,unsigned *out){
+    if(tp==NULL||*tp!=TOML_INTEGER){
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     _("theme_set: %s.%s must be an integer"),slice,key);
+        return 0;
+    }
+    long v=((toml_integer_t *)tp)->v;
+    if(v<0||v>0xFFFFFFFFL){
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     _("theme_set: %s.%s is outside 0x00000000..0xFFFFFFFF"),slice,key);
+        return 0;
+    }
+    *out=(unsigned)v;
+    return 1;
 }
 
 /* 字号数组：元素是正数，写整数或浮点都可以 */
@@ -470,6 +490,13 @@ void theme_set(const char *path,const char *file){
         if(slice->text_color==NULL){
             goto fail;
         }
+
+        /* 未配置时回退到调色板的次要色 */
+        slice->divider_color=(slice->color_size>COLOR_SECONDARY)?slice->color[COLOR_SECONDARY]:0x7F7F7FFF;
+        tp=toml_lookup_from_table((toml_table_t *)pair->value,"divider_color");
+        if(tp!=NULL&&!theme_read_color(tp,slice->name,"divider_color",&slice->divider_color)){
+            goto fail;
+        }
     }
 
     /* 7. default 必须指向已经读进来的某套切片；没写就用第一套 */
@@ -506,6 +533,7 @@ void theme_set(const char *path,const char *file){
 
     /* 主题已经加载成功，这时才按环境 locale 启用 gettext */
     sdlgui_i18n_init();
+    theme_select_system();
 
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
                 _("theme_set: loaded theme %s from %s (%zu slices, %zu fonts)"),
@@ -519,10 +547,31 @@ fail:
                  _("theme_set: %s failed validation; keeping the current theme"),file);
 }
 
-void set_theme(const char *path,const char *file){
-    theme_set(path,file);   /* 别名 */
+
+
+int theme_select_slice(const char *name){
+    if(name==NULL){
+        return 0;
+    }
+    for(size_t i=0;i<theme.slice_size;i++){
+        if(theme.slices[i].name!=NULL&&strcmp(theme.slices[i].name,name)==0){
+            theme.now_slice=&theme.slices[i];
+            return 1;
+        }
+    }
+    return 0;
 }
 
+int theme_select_system(void){
+    SDL_SystemTheme system_theme=SDL_GetSystemTheme();
+    if(system_theme==SDL_SYSTEM_THEME_DARK){
+        return theme_select_slice("Dark");
+    }
+    if(system_theme==SDL_SYSTEM_THEME_LIGHT){
+        return theme_select_slice("Bright");
+    }
+    return 0;
+}
 
 unsigned get_color(size_t n){
     theme_slice_t *now=theme.now_slice;
@@ -531,6 +580,9 @@ unsigned get_color(size_t n){
 unsigned get_text_color(size_t n){
     theme_slice_t *now=theme.now_slice;
     return now->text_color[n>=now->text_color_size?now->text_color_size-1:n];
+}
+unsigned get_divider_color(void){
+    return theme.now_slice->divider_color;
 }
 TTF_Font *get_font(size_t n){
     float ptsize=20.0f;
@@ -561,7 +613,43 @@ void theme_quit(void){
 }
 
 
-static TTF_Font *create_font(const char *name,float ptsize){
+static TTF_Font *open_font_file(const char *name,const char *path,int index,float ptsize){
+    if(path==NULL){
+        return NULL;
+    }
+
+    SDL_PropertiesID props=SDL_CreateProperties();
+    if(props==0){
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("create_font: failed to create font properties: %s"),SDL_GetError());
+        return NULL;
+    }
+
+    TTF_Font *font=NULL;
+    if(SDL_SetStringProperty(props,TTF_PROP_FONT_CREATE_FILENAME_STRING,path)&&
+       SDL_SetFloatProperty(props,TTF_PROP_FONT_CREATE_SIZE_FLOAT,ptsize)&&
+       SDL_SetNumberProperty(props,TTF_PROP_FONT_CREATE_FACE_NUMBER,(Sint64)index)){
+        font=TTF_OpenFontWithProperties(props);
+    }else{
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("create_font: failed to set font properties: %s"),SDL_GetError());
+    }
+    SDL_DestroyProperties(props);
+
+    if(font==NULL){
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("create_font: failed to open font %s (index %d): %s"),path,index,SDL_GetError());
+    }else{
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,_("create_font: %s -> %s (index %d, %.0f pt)"),name,path,index,ptsize);
+    }
+    return font;
+}
+
+/* 通过 fontconfig 解析字体名，返回新字体以及解析出的路径/index（路径由调用方释放） */
+static TTF_Font *create_font(const char *name,float ptsize,char **path_out,int *index_out){
+    if(path_out!=NULL){
+        *path_out=NULL;
+    }
+    if(index_out!=NULL){
+        *index_out=0;
+    }
     if(name==NULL||name[0]=='\0'){
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("create_font: font name must not be empty"));
         return NULL;
@@ -599,32 +687,27 @@ static TTF_Font *create_font(const char *name,float ptsize){
     int index=0;
     FcPatternGetInteger(match,FC_INDEX,0,&index);
 
-
-
-    SDL_PropertiesID props=SDL_CreateProperties();
-    if(props==0){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("create_font: failed to create font properties: %s"),SDL_GetError());
-        FcPatternDestroy(match);
+    char *path=theme_dup_string((const char *)file);
+    FcPatternDestroy(match);
+    if(path==NULL){
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("create_font: failed to copy font path"));
         return NULL;
     }
 
-    TTF_Font *font=NULL;
-    if(SDL_SetStringProperty(props,TTF_PROP_FONT_CREATE_FILENAME_STRING,(const char *)file)&&
-       SDL_SetFloatProperty(props,TTF_PROP_FONT_CREATE_SIZE_FLOAT,ptsize)&&
-       SDL_SetNumberProperty(props,TTF_PROP_FONT_CREATE_FACE_NUMBER,(Sint64)index)){
-        font=TTF_OpenFontWithProperties(props);
-    }else{
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("create_font: failed to set font properties: %s"),SDL_GetError());
-    }
-    SDL_DestroyProperties(props);
-
+    TTF_Font *font=open_font_file(name,path,index,ptsize);
     if(font==NULL){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("create_font: failed to open font %s (index %d): %s"),(const char *)file,index,SDL_GetError());
-    }else{
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,_("create_font: %s -> %s (index %d, %.0f pt)"),name,(const char *)file,index,ptsize);
+        free(path);
+        return NULL;
     }
 
-    FcPatternDestroy(match);
+    if(path_out!=NULL){
+        *path_out=path;
+    }else{
+        free(path);
+    }
+    if(index_out!=NULL){
+        *index_out=index;
+    }
     return font;
 }
 
@@ -632,40 +715,93 @@ typedef struct {
     char *name;    /* NULL 表示内嵌字体 */
     float ptsize;
 
+    char *path;    /* fontconfig 解析出的字体文件；内嵌/回退字体为 NULL */
+    int index;     /* .ttc/.otc 的 face index */
     TTF_Font *font;
 }font_pair;
 
-static font_pair *font_cache=NULL;
-static size_t font_cache_size=0;
+static darray_t(font_pair) font_cache;
 
+/* NULL 字体名排在最前，其余按字符串比较 */
+static int font_cache_name_cmp(const char *a,const char *b){
+    if(a==NULL){
+        return b==NULL?0:-1;
+    }
+    if(b==NULL){
+        return 1;
+    }
+    return strcmp(a,b);
+}
+
+static int font_pair_cmp(const font_pair *a,const font_pair *b){
+    int name_cmp=font_cache_name_cmp(a->name,b->name);
+    if(name_cmp!=0){
+        return name_cmp;
+    }
+    if(a->ptsize<b->ptsize){
+        return -1;
+    }
+    if(a->ptsize>b->ptsize){
+        return 1;
+    }
+    return 0;
+}
+
+/* 缓存按 (name, ptsize) 升序排列，返回第一个不小于 key 的位置 */
+static size_t font_cache_lower_bound(const font_pair *key){
+    size_t lo=0;
+    size_t hi=font_cache.size;
+    while(lo<hi){
+        size_t mid=lo+(hi-lo)/2;
+        if(font_pair_cmp(&font_cache.arr[mid],key)<0){
+            lo=mid+1;
+        }else{
+            hi=mid;
+        }
+    }
+    return lo;
+}
+
+/* 精确查找 (name, ptsize) */
 static font_pair *font_cache_find(const char *name,float ptsize){
-    for(size_t i=0;i<font_cache_size;i++){
-        font_pair *entry=&font_cache[i];
-        if(fabsf(entry->ptsize-ptsize)>0.01f){
-            continue;
-        }
-        if(name==NULL||entry->name==NULL){
-            if(name==NULL&&entry->name==NULL){
-                return entry;
-            }
-        }else if(strcmp(name,entry->name)==0){
-            return entry;
-        }
+    font_pair key={.name=(char *)name,.ptsize=ptsize};
+    size_t i=font_cache_lower_bound(&key);
+    if(i<font_cache.size&&font_pair_cmp(&font_cache.arr[i],&key)==0){
+        return &font_cache.arr[i];
     }
     return NULL;
 }
 
+/* 查找同名且已经记录文件路径的项，用于换字号时跳过 fontconfig */
+static font_pair *font_cache_find_named(const char *name){
+    font_pair key={.name=(char *)name,.ptsize=0.0f};
+    size_t i=font_cache_lower_bound(&key);
+    while(i<font_cache.size&&font_cache_name_cmp(font_cache.arr[i].name,name)==0){
+        if(font_cache.arr[i].path!=NULL){
+            return &font_cache.arr[i];
+        }
+        i++;
+    }
+    return NULL;
+}
+
+/* 二分插入，保持缓存按 (name, ptsize) 有序 */
+static int font_cache_insert(font_pair *entry){
+    font_pair key={.name=entry->name,.ptsize=entry->ptsize};
+    size_t pos=font_cache_lower_bound(&key);
+    return da_add_loc(sizeof(*entry),&font_cache,entry,pos);
+}
+
 /* 关闭缓存里的所有字体；必须在 TTF_Quit() 之前调用 */
 static void release_font_cache(void){
-    for(size_t i=0;i<font_cache_size;i++){
-        if(font_cache[i].font!=NULL){
-            TTF_CloseFont(font_cache[i].font);
+    for(size_t i=0;i<font_cache.size;i++){
+        if(font_cache.arr[i].font!=NULL){
+            TTF_CloseFont(font_cache.arr[i].font);
         }
-        free(font_cache[i].name);
+        free(font_cache.arr[i].name);
+        free(font_cache.arr[i].path);
     }
-    free(font_cache);
-    font_cache=NULL;
-    font_cache_size=0;
+    da_clear(&font_cache);
 }
 
 TTF_Font *obtain_font(const char *name,float ptsize){
@@ -683,38 +819,65 @@ TTF_Font *obtain_font(const char *name,float ptsize){
     }
 
     TTF_Font *font=NULL;
-    if(name!=NULL){
-        font=create_font(name,ptsize);
+    char *path=NULL;
+    int index=0;
+
+    /* 同名不同字号：已有文件路径就直接按路径打开，不再查 fontconfig */
+    font_pair *named=(name!=NULL)?font_cache_find_named(name):NULL;
+    if(named!=NULL){
+        font=open_font_file(name,named->path,named->index,ptsize);
+        if(font!=NULL){
+            path=theme_dup_string(named->path);
+            index=named->index;
+            if(path==NULL){
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("obtain_font: failed to copy font path"));
+                TTF_CloseFont(font);
+                return NULL;
+            }
+        }
     }
+
+    /* 没有记录过路径时才走 fontconfig */
+    if(font==NULL&&name!=NULL&&named==NULL){
+        font=create_font(name,ptsize,&path,&index);
+    }
+
     if(font==NULL){
         font=create_embedded_font(ptsize);
         if(font==NULL){
+            free(path);
             return NULL;
         }
         if(name!=NULL){
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                         _("obtain_font: font %s not found; using the embedded font"),name);
         }
+        free(path);
+        path=NULL;
+        index=0;
     }
 
     char *name_copy=theme_dup_string(name);
     if(name!=NULL&&name_copy==NULL){
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("obtain_font: failed to copy font name"));
+        free(path);
         TTF_CloseFont(font);
         return NULL;
     }
 
-    font_pair *entries=realloc(font_cache,(font_cache_size+1)*sizeof(*entries));
-    if(entries==NULL){
+    font_pair entry={
+        .name=name_copy,
+        .ptsize=ptsize,
+        .path=path,
+        .index=index,
+        .font=font
+    };
+    if(font_cache_insert(&entry)!=0){
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("obtain_font: failed to grow the font cache"));
-        free(name_copy);
-        TTF_CloseFont(font);
+        free(entry.name);
+        free(entry.path);
+        TTF_CloseFont(entry.font);
         return NULL;
     }
-    font_cache=entries;
-    font_cache[font_cache_size].name=name_copy;
-    font_cache[font_cache_size].ptsize=ptsize;
-    font_cache[font_cache_size].font=font;
-    font_cache_size++;
     return font;
 }

@@ -22,6 +22,8 @@ typedef struct {
     size_t color_size;
     unsigned *text_color;
     size_t text_color_size;
+
+    unsigned divider_color;   /* 分割线颜色，单个 0xRRGGBBAA */
 }theme_slice_t;
 
 typedef struct {
@@ -48,10 +50,15 @@ void theme_quit(void);
 
 /* 读取主题配置；配置里带 fonts 时通过 obtain_font() 取字体，需在 sdlgui_init() 之后调用 */
 void theme_set(const char *path,const char *file);
-void set_theme(const char *path,const char *file);   /* theme_set 的别名 */
+
+/* 按切片名切换当前主题；找不到返回 0 */
+int theme_select_slice(const char *name);
+/* 根据 SDL_GetSystemTheme() 选择 Dark/Bright；未知时保持当前切片 */
+int theme_select_system(void);
 
 unsigned get_color(size_t n);
 unsigned get_text_color(size_t n);
+unsigned get_divider_color(void);
 TTF_Font *get_font(size_t n);   /* 返回缓存持有的字体，不要 TTF_CloseFont() */
 float get_text_size(size_t n);
 float get_height(void);

@@ -3,7 +3,9 @@
 #include <fontconfig/fontconfig.h>
 #include "sdlgui.h"
 #include "sdlgui_i18n.h"
+#include "CDS/confc.h"
 #include <locale.h>
+#include <stdio.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <memory.h>
@@ -69,7 +71,44 @@ int get_mouse_x2(void){
 }
 
 
-void sdlgui_init(const char *title,int width,int height,const char *iconpath){
+/* 在 SDLGUI_THEME_PATH 中查找 <name>/config.toml，返回 malloc 路径 */
+static char *find_theme_config(const char *theme_path,const char *name){
+    size_t size=strlen(name)+sizeof("/config.toml");
+    char *target=malloc(size);
+    if(target==NULL){
+        return NULL;
+    }
+    snprintf(target,size,"%s/config.toml",name);
+    char *found=confc_find_path(theme_path,target);
+    free(target);
+    return found;
+}
+
+/* theme 是主题名；找不到指定主题时回退 Default，再回退内置主题 */
+static void load_theme_by_name(const char *theme){
+    const char *theme_path=getenv("SDLGUI_THEME_PATH");
+    if(theme_path==NULL||theme_path[0]=='\0'){
+        theme_path=SDLGUI_THEME_PATH;
+    }
+
+    const char *name=(theme!=NULL&&theme[0]!='\0')?theme:"Default";
+    char *found=find_theme_config(theme_path,name);
+    if(found==NULL&&strcmp(name,"Default")!=0){
+        found=find_theme_config(theme_path,"Default");
+    }
+    if(found==NULL){
+        return;   /* 保持内置主题 */
+    }
+
+    if(found[0]=='/'){
+        theme_set(NULL,found);
+    }else{
+        theme_set(".",found);
+    }
+    free(found);
+}
+
+void sdlgui_init(const char *title,int width,int height,const char *iconpath,const char *theme){
     /* 内建主题只使用 C locale；加载主题后再由 theme_set() 启用 gettext */
     setlocale(LC_ALL,"C");
     if(!SDL_Init(SDL_INIT_VIDEO)||!TTF_Init()){
@@ -98,6 +137,12 @@ void sdlgui_init(const char *title,int width,int height,const char *iconpath){
         sdlgui_quit();
         exit(1);
     }
+
+    /* theme 是主题名：先查指定主题，再查 Default，最后保持内置主题 */
+    load_theme_by_name(theme);
+
+    /* 内置主题也跟随系统亮/暗；加载主题后 theme_set() 会再应用一次 */
+    theme_select_system();
 
     if(iconpath!=NULL){
         SDL_Surface *icon=SDL_LoadSurface(iconpath);
@@ -184,11 +229,10 @@ void rect_draw(void *p){
 }
 
 void *create_layout(size_t siz,layout_t *parent,float w,float h,draw_func draw,update_func update,clear_func clear,mouse_func mouse,align_t align){
-    if(parent==NULL){
-        parent=&root;
+    if(siz<sizeof(layout_t)){
+        return NULL;
     }
-
-    if(parent->son_resizable==FALSE){
+    if(parent!=NULL&&parent->son_resizable==FALSE){
         return NULL;
     }
 
@@ -199,14 +243,16 @@ void *create_layout(size_t siz,layout_t *parent,float w,float h,draw_func draw,u
 
     memset(new,0,siz);
 
-    layout_t **sons=realloc(parent->sons,(parent->son_size+1)*sizeof(layout_t*));
-    if(sons==NULL){
-        free(new);
-        return NULL;
+    if(parent){
+        layout_t **sons=realloc(parent->sons,(parent->son_size+1)*sizeof(layout_t*));
+        if(sons==NULL){
+            free(new);
+            return NULL;
+        }
+        parent->sons=sons;
+        parent->sons[parent->son_size]=new;
+        parent->son_size++;
     }
-    parent->sons=sons;
-    parent->sons[parent->son_size]=new;
-    parent->son_size++;
 
     new->enable=1;         // 新建的布局默认启用
     new->active=1;
@@ -223,6 +269,44 @@ void *create_layout(size_t siz,layout_t *parent,float w,float h,draw_func draw,u
 
     return new;
 }
+
+/* 从旧 parent 的 sons 中摘下，不释放布局本身 */
+void layout_detach(layout_t *child){
+    if(child==NULL||child->parent==NULL){
+        return;
+    }
+    layout_t *parent=(layout_t *)child->parent;
+    for(size_t i=0;i<parent->son_size;i++){
+        if(parent->sons[i]==child){
+            memmove(&parent->sons[i],&parent->sons[i+1],
+                    (parent->son_size-i-1)*sizeof(*parent->sons));
+            parent->son_size--;
+            break;
+        }
+    }
+    child->parent=NULL;
+}
+
+/* 挂接到 parent；如果原来有 parent，会先从旧 parent 摘下 */
+int layout_attach(layout_t *child,layout_t *parent){
+    if(child==NULL||parent==NULL||parent->son_resizable==FALSE){
+        return 0;
+    }
+    if(child->parent==(sublayout_t *)parent){
+        return 1;
+    }
+
+    layout_t **sons=realloc(parent->sons,(parent->son_size+1)*sizeof(*parent->sons));
+    if(sons==NULL){
+        return 0;
+    }
+    parent->sons=sons;
+    layout_detach(child);
+    parent->sons[parent->son_size++]=child;
+    child->parent=(sublayout_t *)parent;
+    return 1;
+}
+
 void delete_layout(layout_t *l){
     for(size_t i=0;i<l->son_size;i++){
         delete_layout(l->sons[i]);
@@ -273,7 +357,13 @@ void layout_mouse(void *p){
 
 void update_layout_only(void *p){
     sublayout_t *l=p;
+    if(l==NULL){
+        return;
+    }
     sublayout_t *parent=l->parent;
+    if(parent==NULL){
+        return;
+    }
 
     switch(l->align.width){
     case 1:
@@ -330,17 +420,25 @@ void update_layout_only(void *p){
 
 void layout_update(void *p){
     layout_t *l=p;
-    update_layout_only(l);
+    if(l==NULL){
+        return;
+    }
+    if(l->parent){
+        update_layout_only(l);
+    }
     if(l->draw){
         l->draw(l);
     }
-    update_sons(l);
+    if(l->x<get_root_w()*2&&l->y<get_root_h()*2&&l->x+l->width>-get_root_w()*2&&l->y+l->height>-get_root_h()*2){
+        update_sons(l);
+    }
 }
 
 
 
 layout_rect_t *create_layout_rect(void *parent,float w,float h,align_t align){
-    return create_layout(sizeof(layout_rect_t),parent,w,h,rect_draw,layout_update,NULL,NULL,align);
+    layout_t *p=parent?parent:&root;
+    return create_layout(sizeof(layout_rect_t),p,w,h,rect_draw,layout_update,NULL,NULL,align);
 }
 
 
@@ -354,6 +452,7 @@ layout_rect_t *create_layout_rect(void *parent,float w,float h,align_t align){
 
 static void draft_text_clear_entry(void *p);
 static void draft_texture_clear_entry(void *p);
+static int draft_text_build_cache(draft_text_t *d);
 
 static void draft_update_layout(sublayout_t *sl){
     if(sl->parent==NULL){
@@ -623,8 +722,8 @@ draft_text_t *draft_create_text(align_t align,TTF_Font *font,char *context,float
     d->clear=draft_text_clear_entry;
     d->parent=NULL;
     d->align=align;
-    d->width=wl;
-    d->height=hl;
+    d->width=0.0f;
+    d->height=0.0f;
     d->can_enter=1;
     d->can_change=0;
     d->font=font;
@@ -632,6 +731,11 @@ draft_text_t *draft_create_text(align_t align,TTF_Font *font,char *context,float
     d->width_limit=wl;
     d->height_limit=hl;
     d->color=color;
+
+    /* 不可变文字在 create 时直接测量并建立缓存；失败时绘制阶段会重试 */
+    if(!d->can_change&&d->font!=NULL&&d->context!=NULL&&d->context[0]!='\0'&&renderer!=NULL){
+        draft_text_build_cache(d);
+    }
     return d;
 }
 
@@ -675,6 +779,69 @@ static SDL_Surface *draft_text_render_segment(draft_text_t *d,const char *text,s
         return TTF_RenderText_Blended_Wrapped(d->font,text,length,color,(int)(d->width_limit+0.5f));
     }
     return TTF_RenderText_Blended(d->font,text,length,color);
+}
+
+/* 计算最终渲染宽高；height_limit>0 时高度按裁剪后的结果算 */
+static int draft_text_measure_size(draft_text_t *d,float *out_width,float *out_height){
+    if(d->font==NULL||d->context==NULL||d->context[0]=='\0'){
+        return 0;
+    }
+    int line_height=TTF_GetFontHeight(d->font);
+    if(line_height<=0){
+        return 0;
+    }
+
+    SDL_Color color=draft_color(d->color);
+    const char *context=d->context;
+    char *single_line=NULL;
+    if(!d->can_enter){
+        single_line=draft_text_single_line(context);
+        if(single_line==NULL){
+            return 0;
+        }
+        context=single_line;
+    }
+
+    int max_width=0;
+    int total_height=0;
+    const char *start=context;
+    while(start!=NULL&&*start!='\0'){
+        const char *end=d->can_enter?strchr(start,'\n'):NULL;
+        size_t length=end?(size_t)(end-start):strlen(start);
+
+        SDL_Surface *surface=draft_text_render_segment(d,start,length,color);
+        if(surface!=NULL){
+            if(surface->w>max_width){
+                max_width=surface->w;
+            }
+            total_height+=(d->width_limit>0.0f)?surface->h:line_height;
+            SDL_DestroySurface(surface);
+        }else{
+            total_height+=line_height;
+        }
+
+        if(end==NULL||end[1]=='\0'){
+            break;
+        }
+        start=end+1;
+    }
+    free(single_line);
+
+    if(max_width<=0||total_height<=0){
+        return 0;
+    }
+
+    int final_height=total_height;
+    if(d->height_limit>0.0f&&(float)final_height>d->height_limit){
+        final_height=(int)(d->height_limit+0.5f);
+    }
+    if(final_height<=0){
+        return 0;
+    }
+
+    *out_width=(float)max_width;
+    *out_height=(float)final_height;
+    return 1;
 }
 
 /* can_change=0：把整段文本合成为一张纹理，之后只做 blit */
@@ -765,6 +932,13 @@ static int draft_text_build_cache(draft_text_t *d){
     d->cache=cache;
     d->cache_width=(float)max_width;
     d->cache_height=(float)total_height;
+
+    int final_height=total_height;
+    if(d->height_limit>0.0f&&(float)final_height>d->height_limit){
+        final_height=(int)(d->height_limit+0.5f);
+    }
+    d->width=(float)max_width;
+    d->height=(float)final_height;
     return 1;
 }
 
@@ -840,7 +1014,6 @@ void draft_draw_text(void *p){
     if(d==NULL||renderer==NULL){
         return;
     }
-    draft_update_layout(DRAFT_SUBLAYOUT(d));
     if(d->font==NULL||d->context==NULL||d->context[0]=='\0'){
         draft_text_clear(d);
         return;
@@ -850,6 +1023,14 @@ void draft_draw_text(void *p){
         if(d->cache!=NULL){
             draft_text_clear(d);
         }
+        float width=0.0f;
+        float height=0.0f;
+        if(!draft_text_measure_size(d,&width,&height)){
+            return;
+        }
+        d->width=width;
+        d->height=height;
+        draft_update_layout(DRAFT_SUBLAYOUT(d));
         draft_text_draw_direct(d);
         return;
     }
@@ -858,11 +1039,10 @@ void draft_draw_text(void *p){
         return;
     }
 
-    float width=d->cache_width;
-    float height=d->cache_height;
-    if(d->height_limit>0.0f&&height>d->height_limit){
-        height=d->height_limit;
-    }
+    draft_update_layout(DRAFT_SUBLAYOUT(d));
+
+    float width=d->width;
+    float height=d->height;
     if(width<=0.0f||height<=0.0f){
         return;
     }
@@ -1103,7 +1283,8 @@ bbox_rrect_t *bbox_create_rrect(align_t align,float w,float h,float r){
 }
 
 layout_button_t *create_layout_button(void *parent,float w,float h,align_t align,button_callback_func callback,void *data,...){
-    layout_button_t *l=create_layout(sizeof(layout_button_t),parent,w,h,NULL,layout_update,button_clear,button_mouse,align);
+    layout_t *p=parent?parent:&root;
+    layout_button_t *l=create_layout(sizeof(layout_button_t),p,w,h,NULL,layout_update,button_clear,button_mouse,align);
     if(l==NULL){
         return NULL;
     }
@@ -1217,9 +1398,12 @@ layout_animation_t *create_layout_animation(void *p,animate_func animation,...){
     };
 
     layout_t *parent=p;
+    if(parent==NULL){
+        parent=&root;
+    }
 
-    float width=parent?parent->width:root.width;
-    float height=parent?parent->height:root.height;
+    float width=parent->width;
+    float height=parent->height;
 
     layout_animation_t *ret=create_layout(
         sizeof(layout_animation_t),
@@ -1303,4 +1487,40 @@ void animation_clear(void *p){
     l->animation=NULL;
     l->status=0;
     l->timer=0;
+}
+
+
+layout_list_t *create_layout_list(void *parent,float w,float h,align_t align,int direction,...){
+    layout_t *parent_layout=parent?parent:&root;
+    layout_list_t *l=create_layout(
+        sizeof(layout_list_t),parent_layout,w,h,NULL,layout_update,NULL,layout_mouse,align);
+    if(l==NULL){
+        return NULL;
+    }
+
+    l->direction=direction?1u:0u;
+    l->limited=0;
+    l->i=0;
+    l->start=0.0f;
+
+    va_list arg;
+    va_start(arg,direction);
+
+    layout_t *layout=NULL;
+    while((layout=va_arg(arg,layout_t*))!=NULL){
+        /* 从原 parent 摘下并挂到 list，孩子所有权归 list */
+        if(!layout_attach(layout,(layout_t *)l)){
+            continue;
+        }
+        if(l->direction==0){
+            layout->align.vertical=1;
+            layout->align.vertical_offset=layout->height;
+        }else{
+            layout->align.horizon=2;
+            layout->align.horizon_offset=layout->width;
+        }
+    }
+
+    va_end(arg);
+    return l;
 }

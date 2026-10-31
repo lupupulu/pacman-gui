@@ -1,9 +1,7 @@
 #include <SDL3/SDL.h>
-#include <SDL3_ttf/SDL_ttf.h>
 #include "sdlgui.h"
 #include "sdlgui_i18n.h"
 #include <stdlib.h>
-#include <string.h>
 
 #define WINDOW_TITLE "pacman-gui"
 #define WINDOW_W 640
@@ -100,21 +98,43 @@ static void button_clicked(void *data){
     }
     SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,_("Button clicked: %d"),clicks);
 }
+static void update_theme_colors(layout_rect_t *top_bar,draft_rrect_t *button,draft_text_t *label){
+    if(top_bar!=NULL){
+        top_bar->color=get_color(COLOR_SECONDARY);
+    }
+    if(button!=NULL){
+        button->color=get_color(COLOR_HIGHLIGHT);
+    }
+    if(label!=NULL){
+        label->color=get_text_color(0);
+        draft_text_clear(label);   /* 文字颜色已烘焙进缓存，清掉后按新颜色重建 */
+    }
+}
+
+static void apply_system_theme(layout_rect_t *top_bar,draft_rrect_t *button,draft_text_t *label){
+    theme_select_system();
+    update_theme_colors(top_bar,button,label);
+}
 
 int main(int argc,char *argv[]){
     (void)argc;
     (void)argv;
 
-    sdlgui_init("pacman-gui",WINDOW_W,WINDOW_H,"assets/icon-64.png");
+    sdlgui_init("pacman-gui",WINDOW_W,WINDOW_H,"assets/icon-64.png","Default");
 
-    /* 顶部测试条 */
-    layout_rect_t *rect=create_layout_rect(NULL,0,45,make_align(0,0,1,0,0,0,1.0f,0));
-    rect->color=0xFFFFFFFF;
-    rect->l.enable=1;
+    /* 顶部测试条：颜色跟随当前主题 */
+    layout_rect_t *top_bar=create_layout_rect(NULL,0,45,make_align(0,0,1,0,0,0,1.0f,0));
+    if(top_bar!=NULL){
+        top_bar->color=get_color(COLOR_SECONDARY);
+        top_bar->l.enable=1;
+    }
 
     /* 判定框先创建，parent 由 create_layout_button() 挂接时指定 */
     bbox_default_t *hitbox=bbox_create_default(
         bbox_check_rect,make_align(3,3,1,1,0.0f,0.0f,1.0f,1.0f),200.0f,60.0f);
+
+    draft_rrect_t *button_draft=NULL;
+    draft_text_t *button_label=NULL;
 
     /* 居中按钮：按钮本身只负责鼠标，显示用它的子矩形 */
     layout_button_t *button=create_layout_button(
@@ -127,25 +147,19 @@ int main(int argc,char *argv[]){
     if(button!=NULL){
         /* 用 animation 当按钮外观：一个圆角 draft + 点击脉冲动画 */
         unsigned base=get_color(COLOR_HIGHLIGHT);
-        draft_rrect_t *button_draft=draft_create_rrect(
+        button_draft=draft_create_rrect(
             make_align(3,3,1,1,0.0f,0.0f,1.0f,1.0f),
             200.0f,60.0f,10.0f,base,0xFFFFFFFFu);
 
-        /* 按钮文字：测量文字尺寸后按中心对齐放进动画 */
+        /* 按钮文字：create 时测量最终宽高并建缓存，按中心对齐放进动画 */
         TTF_Font *font=get_font(0);
         const char *label_text=_("Click me");
-        int text_w=0, text_h=0;
-        draft_text_t *button_label=NULL;
-        if(font!=NULL&&TTF_GetStringSize(font,label_text,strlen(label_text),&text_w,&text_h)){
+        if(font!=NULL){
             button_label=draft_create_text(
                 make_align(3,3,0,0,0.0f,0.0f,0.0f,0.0f),
-                font,(char *)label_text,
-                (float)text_w,(float)text_h,get_text_color(0));
+                font,(char *)label_text,0.0f,0.0f,get_text_color(0));
             if(button_label!=NULL){
-                button_label->can_change=0;
                 button_label->can_enter=0;
-                button_label->width_limit=0.0f;
-                button_label->height_limit=0.0f;
             }
         }
 
@@ -156,7 +170,12 @@ int main(int argc,char *argv[]){
             if(button_anim==NULL){
                 free(button_draft);
                 free(button_label);
+                button_draft=NULL;
+                button_label=NULL;
             }
+        }else{
+            free(button_label);
+            button_label=NULL;
         }
 
         button->callback=button_clicked;
@@ -178,6 +197,8 @@ int main(int argc,char *argv[]){
             }else if(ev.type==SDL_EVENT_WINDOW_RESIZED
                   || ev.type==SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED){
                 update_root();
+            }else if(ev.type==SDL_EVENT_SYSTEM_THEME_CHANGED){
+                apply_system_theme(top_bar,button_draft,button_label);
             }else if(ev.type==SDL_EVENT_MOUSE_MOTION){
                 update_mouse(&ev);
             }else if(ev.type==SDL_EVENT_MOUSE_BUTTON_DOWN

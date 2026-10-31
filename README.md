@@ -68,6 +68,17 @@ build/         构建产物（已被 .gitignore 忽略）
 缓存中的字体在 `sdlgui_quit()` / `theme_quit()` 中统一关闭。
 具体用法和 SDL3_ttf 打开方式见 `tools/README.md`。
 
+`sdlgui_init(..., theme_name)` 在 `SDLGUI_THEME_PATH` 指向的目录里查找
+`<theme_name>/config.toml`；找不到指定主题时再查 `Default/config.toml`，
+仍找不到则使用内置主题。`theme_name` 为 `NULL`/空串时等同于 `Default`。
+
+`SDLGUI_THEME_PATH` 默认是 `/usr/share/sdlgui:~/.local/share/sdlgui`，
+也可以用同名环境变量覆盖。例如在仓库根目录测试示例主题：
+
+```bash
+SDLGUI_THEME_PATH=assets ./build/pacman-gui
+```
+
 ## 本地化
 
 日志和错误消息的 msgid 统一使用英语，通过 gettext 本地化，textdomain 为 `pacman-gui`。

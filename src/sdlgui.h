@@ -12,9 +12,16 @@ typedef struct SDL_Texture SDL_Texture;
 typedef struct SDL_Window SDL_Window;
 #endif
 
+#ifndef SDLGUI_THEME_PATH
+#define SDLGUI_THEME_PATH "/usr/share/sdlgui:~/.local/share/sdlgui"
+#endif
+
 typedef struct layout_t layout_t;   /* get_root() 等在定义之前就要用到 */
 
-void sdlgui_init(const char *title,int width,int height,const char *iconpath);
+/* theme: 主题名。在 SDLGUI_THEME_PATH 中查找 <theme>/config.toml；
+ * theme 为 NULL/空串，或指定主题不存在时，回退 Default/config.toml；
+ * 仍然找不到则使用内置主题。 */
+void sdlgui_init(const char *title,int width,int height,const char *iconpath,const char *theme);
 void sdlgui_quit(void);
 
 void set_window(SDL_Window *w);
@@ -97,8 +104,12 @@ typedef struct layout_t{
     mouse_func mouse;
 }layout_t;
 
+/* parent==NULL 时创建不挂接的孤儿布局；使用前需要 layout_attach()。 */
 void *create_layout(size_t siz,layout_t *parent,float w,float h,draw_func draw,update_func update,clear_func clear,mouse_func mouse,align_t align);
 void delete_layout(layout_t *l);
+
+int layout_attach(layout_t *child,layout_t *parent);
+void layout_detach(layout_t *child);
 
 void update_sons(void *l);
 void update_layout_only(void *l); // 仅更新布局
@@ -172,6 +183,8 @@ typedef struct {
     TTF_Font *font;    // 行高由 TTF_GetFontHeight(font) 在绘制时读取
     char *context;    // 借用调用方的字符串，create 不复制也不负责释放
 
+    /* SUBLAYOUT_DEF 里的 width/height 是最终渲染尺寸；
+     * 下面两个只是约束，0 表示不限制。 */
     float width_limit;
     float height_limit;
 
@@ -182,6 +195,8 @@ typedef struct {
     float cache_height;
 }draft_text_t;
 
+/* wl/hl 是最大宽高限制，0 表示不限制；width/height 在 create 或 draw 时
+ * 更新为最终渲染尺寸。can_change=0 时 create 会预先测量并建立缓存。 */
 draft_text_t *draft_create_text(align_t align,TTF_Font *font,char *context,float wl,float hl,unsigned color);
 void draft_draw_text(void *l);
 void draft_text_clear(draft_text_t *l);   // 释放 can_change=0 的缓存纹理
@@ -282,10 +297,21 @@ typedef struct {
 /* 可变参数是若干 bbox 指针，以 NULL 结尾；所有权交给按钮，button_clear() 会释放。 */
 layout_button_t *create_layout_button(void *parent,float w,float h,align_t align,button_callback_func callback,void *data,...);
 
-
-
 void button_clear(void *l);
 void button_mouse(void *l);
 
+
+
+typedef struct {
+    layout_t l;
+
+    unsigned direction:1; // 延伸方向 0:竖向 1:横向
+    unsigned limited:1;   // 是否限制延伸方向长度
+
+    size_t i;  // 渲染开始点指向的布局
+    float start; // 渲染开始点相对该布局的偏移量
+}layout_list_t;
+
+layout_list_t *create_layout_list(void *parent,float w,float h,align_t align,int direction,...);
 
 #endif

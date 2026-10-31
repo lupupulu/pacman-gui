@@ -12,6 +12,7 @@
 # 每个主题（[Bright]、[Dark]……）：
 #   color[]        调色板，颜色写成 0xRRGGBBAA
 #   text_color[]   文字颜色
+#   divider_color  分割线颜色（单个 0xRRGGBBAA；不写时用 color[1]）
 
 version = "0.0.1"
 name = "Default"
@@ -23,9 +24,11 @@ item_height = 32.0
 rect_round_corner = 0.0
 
 [Bright]
-color = [ 0xFFFFFFFF, 0x7F7F7FFF, 0x1E90FFFF , 0x1E90FFFF ]
-text_color = [ 0x000000FF ]
+color = [ 0xEFF1F5FF, 0xCCD0DAFF, 0x8CAAEEFF, 0xFE640BFF ]
+text_color = [ 0x4C4F69FF ]
+divider_color = 0xBCC0CCFF
 
 [Dark]
-color = [ 0x000000FF, 0x7F7F7FFF, 0x3399FFFF , 0x1E90FFFF ]
-text_color = [ 0xFFFFFFFF ]
+color = [ 0x1E1E2EFF, 0x313244FF, 0x1E66F5FF, 0xFAB387FF ]
+text_color = [ 0xCDD6F4FF ]
+divider_color = 0x45475AFF
