@@ -44,6 +44,7 @@ int get_mouse_x2(void);
 void update_root(void);
 void resize_root(int w,int h);
 const layout_t *get_root(void);
+layout_t *get_root_layout(void);   /* 可修改的 root，用于挂接顶层布局 */
 
 float get_root_w(void);
 float get_root_h(void);
@@ -222,7 +223,8 @@ typedef struct {
     size_t draft_size;
 
     animate_func animation;
-    size_t timer;  // 计时器
+    unsigned long timer;  // 计时器
+    int lasting; // 动画还在持续
     int status;  // 状态，0为不刷新动画
 }layout_animation_t;
 
@@ -280,12 +282,22 @@ bbox_rrect_t *bbox_create_rrect(align_t align,float w,float h,float r);
 int bbox_check_rrect(void *sublayout,float x,float y);     /* 圆角矩形 */
 
 
-typedef void(*button_callback_func)(void *data);
+typedef enum {
+    BUTTON_STATUS_OUT=0,      /* 鼠标不在按钮上 */
+    BUTTON_STATUS_TRIGGER=1,  /* 触发 */
+    BUTTON_STATUS_HOVER=2     /* 鼠标在按钮上 */
+}button_status_t;
+
+/* status 是 button_status_t；只在状态变化时调用 */
+typedef void(*button_callback_func)(int status,void *data);
 typedef struct {
     layout_t l;
     int sublayout_resizable:1;
     unsigned left_last_state:1; // 鼠标左键上次状态
+    unsigned pressed_inside:1;  // 本次按下是否落在判定框内
     unsigned need_bounce:2;     // 是否等到鼠标回弹再触发 0:否 1:无论回弹时在哪，回弹即触发 2:只有在子布局内回弹才触发
+
+    button_status_t status;
 
     bbox_t **bboxes;
     size_t bboxes_size;

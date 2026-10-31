@@ -11,9 +11,9 @@
 
 
 /* theme_t 里的 color/text 是 unsigned *，内建主题需要各自准备静态后备数组。 */
-static unsigned builtin_bright_color[]={0xEFF1F5FF,0xCCD0DAFF,0x8CAAEEFF,0xFE640BFF};
+static unsigned builtin_bright_color[]={0xEFF1F5FF,0xCCD0DAFF,0x8CAAEEFF,0xFE640BFF,0xABC4FFFF};
 static unsigned builtin_bright_text_color[]={0x4C4F69FF};
-static unsigned builtin_dark_color[]={0x1E1E2EFF,0x313244FF,0x1E66F5FF,0xFAB387FF};
+static unsigned builtin_dark_color[]={0x1E1E2EFF,0x313244FF,0x1E66F5FF,0xFAB387FF,0x89B4FAFF};
 static unsigned builtin_dark_text_color[]={0xCDD6F4FF};
 static unsigned builtin_text_size[]={20,16,14};
 static char *builtin_font_names[]={NULL};   /* NULL 表示使用内嵌字体 */
@@ -26,7 +26,7 @@ static theme_slice_t builtin_theme_slice[]={
     {
         .name="Bright",
         .color=builtin_bright_color,
-        .color_size=4,
+        .color_size=5,
         .text_color=builtin_bright_text_color,
         .text_color_size=1,
         .divider_color=0xBCC0CCFF
@@ -34,7 +34,7 @@ static theme_slice_t builtin_theme_slice[]={
     {
         .name="Dark",
         .color=builtin_dark_color,
-        .color_size=4,
+        .color_size=5,
         .text_color=builtin_dark_text_color,
         .text_color_size=1,
         .divider_color=0x45475AFF
@@ -53,7 +53,9 @@ static theme_t theme={
     .text_size=3,
 
     .item_height=32.0f,
-    .rect_round_corner=0.0f,
+    .button_animation_time=200,
+    .button_height=32.0f,
+    .rect_round_corner=10.0f,
 
     .slices=builtin_theme_slice,
     .slice_size=2
@@ -92,6 +94,8 @@ static TTF_Font *create_embedded_font(float ptsize){
     TTF_Font *font=TTF_OpenFontIO(io,true,ptsize);
     if(font==NULL){
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("create_embedded_font: TTF_OpenFontIO(%.0f) failed: %s"),ptsize,SDL_GetError());
+    }else{
+        TTF_SetFontHinting(font,TTF_HINTING_MONO);
     }
     return font;
 }
@@ -129,7 +133,9 @@ static void theme_reset_builtin(void){
     theme.text=builtin_text_size;
     theme.text_size=3;
     theme.item_height=32.0f;
-    theme.rect_round_corner=0.0f;
+    theme.button_animation_time=200;
+    theme.button_height=32.0f;
+    theme.rect_round_corner=10.0f;
     theme.slices=builtin_theme_slice;
     theme.slice_size=2;
 }
@@ -308,7 +314,9 @@ void theme_set(const char *path,const char *file){
        tmp.fonts 先保持 NULL，等 fonts 解析阶段再分配，避免失败时误释放当前主题的数组。 */
     theme_t tmp={0};
     tmp.item_height=32.0f;
-    tmp.rect_round_corner=0.0f;
+    tmp.button_animation_time=200;
+    tmp.button_height=32.0f;
+    tmp.rect_round_corner=10.0f;
 
     toml_type_t *tp=NULL;
 
@@ -431,6 +439,27 @@ void theme_set(const char *path,const char *file){
             goto fail;
         }
         tmp.item_height=(float)v;
+    }
+    tp=toml_lookup(&t,"",0,"button_height");
+    if(tp!=NULL){
+        double v=0.0;
+        if(!theme_read_number(tp,&v)||!isfinite(v)||v<=0.0){
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("theme_set: button_height must be positive"));
+            goto fail;
+        }
+        tmp.button_height=(float)v;
+    }
+    tp=toml_lookup(&t,"",0,"button_animation_time");
+    if(tp!=NULL){
+        double v=0.0;
+        if(!theme_read_number(tp,&v)||!isfinite(v)||v<=0.0){
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("theme_set: button_animation_time must be positive"));
+            goto fail;
+        }
+        tmp.button_animation_time=(unsigned long)v;
+    }
+    if(tmp.button_height>tmp.item_height){
+        tmp.button_height=tmp.item_height;
     }
     tp=toml_lookup(&t,"",0,"rect_round_corner");
     if(tp!=NULL){
@@ -584,26 +613,19 @@ unsigned get_text_color(size_t n){
 unsigned get_divider_color(void){
     return theme.now_slice->divider_color;
 }
-TTF_Font *get_font(size_t n){
-    float ptsize=20.0f;
-    if(theme.text!=NULL&&theme.text_size>0&&theme.text[0]>0){
-        ptsize=(float)theme.text[0];
-    }
-    if(theme.fonts==NULL||theme.font_size==0){
-        return obtain_font(NULL,ptsize);
-    }
-    return obtain_font(theme.fonts[n>=theme.font_size?theme.font_size-1:n],ptsize);
+const char *get_font(size_t n){
+    return theme.fonts[n>=theme.font_size?theme.font_size-1:n];
 }
 float get_text_size(size_t n){
     return theme.text[n>=theme.text_size?theme.text_size-1:n];
 }
-float get_height(void){
-    return theme.item_height;
-}
-float get_rrect(void){
-    return theme.rect_round_corner;
-}
 
+const theme_t *get_theme(void){
+    return &theme;
+}
+const theme_slice_t *get_theme_slice(void){
+    return theme.now_slice;
+}
 
 
 void theme_quit(void){
@@ -637,6 +659,7 @@ static TTF_Font *open_font_file(const char *name,const char *path,int index,floa
     if(font==NULL){
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("create_font: failed to open font %s (index %d): %s"),path,index,SDL_GetError());
     }else{
+        TTF_SetFontHinting(font,TTF_HINTING_MONO);
         SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,_("create_font: %s -> %s (index %d, %.0f pt)"),name,path,index,ptsize);
     }
     return font;

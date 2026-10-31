@@ -7,10 +7,12 @@
 typedef struct TTF_Font TTF_Font;
 #endif
 
-#define COLOR_MAIN       0
-#define COLOR_SECONDARY  1
-#define COLOR_HIGHLIGHT  2
-#define COLOR_BUTTON     3
+#define COLOR_MAIN             0
+#define COLOR_SECONDARY        1
+#define COLOR_BUTTON           2
+#define COLOR_BUTTON_CONFIRM   3
+#define COLOR_BUTTON_HIGHLIGHT 4
+
 
 #define TEXT_TITLE    0
 #define TEXT_SUBTITLE 1
@@ -38,6 +40,8 @@ typedef struct {
     size_t text_size;
 
     float item_height;
+    unsigned long button_animation_time;
+    float button_height;
     float rect_round_corner;
 
     theme_slice_t *slices;
@@ -59,10 +63,10 @@ int theme_select_system(void);
 unsigned get_color(size_t n);
 unsigned get_text_color(size_t n);
 unsigned get_divider_color(void);
-TTF_Font *get_font(size_t n);   /* 返回缓存持有的字体，不要 TTF_CloseFont() */
+const char *get_font(size_t n);   /* 返回字体族名，不是 TTF_Font */
 float get_text_size(size_t n);
-float get_height(void);
-float get_rrect(void);
+const theme_t *get_theme(void);
+const theme_slice_t *get_theme_slice(void);
 
 
 /* 按字体族名和字号取字体：命中缓存直接返回；找不到时返回内嵌字体。

@@ -207,6 +207,9 @@ void update_root(void){
 const layout_t *get_root(void){
     return &root;
 }
+layout_t *get_root_layout(void){
+    return &root;
+}
 
 float get_root_w(void){
     return root.width;
@@ -928,6 +931,7 @@ static int draft_text_build_cache(draft_text_t *d){
     if(cache==NULL){
         return 0;
     }
+    SDL_SetTextureScaleMode(cache,SDL_SCALEMODE_NEAREST);
 
     d->cache=cache;
     d->cache_width=(float)max_width;
@@ -984,8 +988,9 @@ static void draft_text_draw_direct(draft_text_t *d){
 
             SDL_Texture *tex=SDL_CreateTextureFromSurface(renderer,surface);
             if(tex!=NULL){
+                SDL_SetTextureScaleMode(tex,SDL_SCALEMODE_NEAREST);
                 SDL_FRect src={.x=0,.y=0,.w=(float)surface->w,.h=draw_height};
-                SDL_FRect dst={.x=d->x,.y=y,.w=(float)surface->w,.h=draw_height};
+                SDL_FRect dst={.x=SDL_roundf(d->x),.y=SDL_roundf(y),.w=(float)surface->w,.h=draw_height};
                 SDL_RenderTexture(renderer,tex,&src,&dst);
                 SDL_DestroyTexture(tex);
             }
@@ -1048,7 +1053,7 @@ void draft_draw_text(void *p){
     }
 
     SDL_FRect src={.x=0,.y=0,.w=width,.h=height};
-    SDL_FRect dst={.x=d->x,.y=d->y,.w=width,.h=height};
+    SDL_FRect dst={.x=SDL_roundf(d->x),.y=SDL_roundf(d->y),.w=width,.h=height};
     SDL_RenderTexture(renderer,d->cache,&src,&dst);
 }
 
@@ -1291,6 +1296,8 @@ layout_button_t *create_layout_button(void *parent,float w,float h,align_t align
 
     l->need_bounce=1;
     l->left_last_state=0;
+    l->pressed_inside=0;
+    l->status=BUTTON_STATUS_OUT;
     l->callback=callback;
     l->data=data;
     l->sublayout_resizable=1;
@@ -1330,40 +1337,65 @@ void button_clear(void *p){
     }
 }
 
+static void button_update_status(layout_button_t *l,button_status_t status){
+    if(l->status==status){
+        return;
+    }
+    l->status=status;
+    if(l->callback!=NULL){
+        l->callback((int)status,l->data);
+    }
+}
+
+/* 鼠标事件可能发生在 update_sons() 之前，先把自身及祖先布局位置算对 */
+static void button_update_ancestor_layouts(sublayout_t *sl){
+    if(sl->parent!=NULL){
+        button_update_ancestor_layouts(sl->parent);
+    }
+    update_layout_only(sl);
+}
+
 void button_mouse(void *p){
     layout_button_t *l=p;
 
-    if(l->need_bounce==1&&l->left_last_state==1&&get_mouse_left()==0){
-        if(l->callback){
-            l->callback(l->data);
-        }
-        l->left_last_state=FALSE;
-        return ;
-    }
+    button_update_ancestor_layouts((sublayout_t *)&l->l);
 
-    if(l->need_bounce!=2&&get_mouse_left()==0){
-        return ;
-    }
-
-    int click=FALSE;
+    int hover=FALSE;
     for(size_t i=0;i<l->bboxes_size;i++){
-        /* bboxes[i] 指向子布局结构体，第一个成员就是它自己的 check 函数 */
         bbox_t *bbox=l->bboxes[i];
-        if(bbox&&bbox->check(bbox,get_mouse_x(),get_mouse_y())){
-            click=TRUE;
+        if(bbox!=NULL&&bbox->check(bbox,get_mouse_x(),get_mouse_y())){
+            hover=TRUE;
             break;
         }
     }
 
-    if(l->need_bounce==2&&l->left_last_state==1&&get_mouse_left()==0){
-        if(l->callback){
-            l->callback(l->data);
+    int pressed=get_mouse_left()!=0;
+    int was_pressed=l->left_last_state!=0;
+    int trigger=FALSE;
+
+    if(pressed&&!was_pressed){
+        l->pressed_inside=hover?1u:0u;
+        if(l->need_bounce==0&&hover){
+            trigger=TRUE;
         }
-        l->left_last_state=FALSE;
-        return ;
+    }else if(!pressed&&was_pressed){
+        if(l->need_bounce==1&&l->pressed_inside){
+            trigger=TRUE;
+        }else if(l->need_bounce==2&&l->pressed_inside&&hover){
+            trigger=TRUE;
+        }
+        l->pressed_inside=0;
     }
 
-    l->left_last_state=click;
+    l->left_last_state=pressed?1u:0u;
+
+    if(trigger){
+        button_update_status(l,BUTTON_STATUS_TRIGGER);
+    }else if(hover){
+        button_update_status(l,BUTTON_STATUS_HOVER);
+    }else{
+        button_update_status(l,BUTTON_STATUS_OUT);
+    }
 
     layout_mouse(p);
 }
@@ -1422,6 +1454,7 @@ layout_animation_t *create_layout_animation(void *p,animate_func animation,...){
     }
 
     ret->animation=animation;
+    ret->lasting=0;
     ret->status=0;
     ret->draft_size=0;
     ret->draft_resizable=1;
