@@ -33,6 +33,13 @@ void set_mouse_pos(float x,float y);
 float get_mouse_x(void);
 float get_mouse_y(void);
 
+/* 滚轮/触摸板滚动增量，正方向与 SDL_MouseWheelEvent 一致；
+ * 累积到下一次 update_root() 时由鼠标下的可滑动列表消费。 */
+void set_mouse_wheel(float x,float y);
+float get_mouse_wheel_x(void);
+float get_mouse_wheel_y(void);
+#define get_mouse_wheel get_mouse_wheel_y
+
 /* 五个鼠标按键状态：1=按下，0=未按下（左 中 右 侧键X1 侧键X2） */
 void set_mouse_button(int left,int mid,int right,int x1,int x2);
 int get_mouse_left(void);
@@ -41,7 +48,8 @@ int get_mouse_right(void);
 int get_mouse_x1(void);
 int get_mouse_x2(void);
 
-void update_root(void);
+void update_root(void);   /* 更新根尺寸，计算各布局对齐 */
+void draw_root(void);     /* 递归绘制布局树，裁剪到各布局范围 */
 void resize_root(int w,int h);
 const layout_t *get_root(void);
 layout_t *get_root_layout(void);   /* 可修改的 root，用于挂接顶层布局 */
@@ -105,17 +113,18 @@ typedef struct layout_t{
     mouse_func mouse;
 }layout_t;
 
-/* parent==NULL 时创建不挂接的孤儿布局；使用前需要 layout_attach()。 */
+/* parent==NULL 时创建不挂接的孤儿布局；使用前需要 layout_attach()。
+ * update/mouse 只处理该布局自身；子布局的遍历由 update_sons()/layout_mouse()
+ * 统一递归完成。容器布局没有自己的鼠标行为时 mouse 传 NULL。 */
 void *create_layout(size_t siz,layout_t *parent,float w,float h,draw_func draw,update_func update,clear_func clear,mouse_func mouse,align_t align);
 void delete_layout(layout_t *l);
 
 int layout_attach(layout_t *child,layout_t *parent);
 void layout_detach(layout_t *child);
 
-void update_sons(void *l);
-void update_layout_only(void *l); // 仅更新布局
-void layout_update(void *l);
-void layout_mouse(void *l);
+void update_sons(void *l);   /* 调用子布局的 update，并递归更新子布局的子树 */
+void layout_update(void *l); /* 只计算一个布局相对父布局的对齐 */
+void layout_mouse(void *l);  /* 调用子布局的 mouse，并递归遍历子布局的子树 */
 
 
 typedef struct {
@@ -317,13 +326,28 @@ void button_mouse(void *l);
 typedef struct {
     layout_t l;
 
-    unsigned direction:1; // 延伸方向 0:竖向 1:横向
-    unsigned limited:1;   // 是否限制延伸方向长度
+    unsigned direction:1;       // 延伸方向 0:竖向 1:横向
+    unsigned can_be_slided:1;   // 内容超出视口时可滚动，由 list 自动计算
 
-    size_t i;  // 渲染开始点指向的布局
-    float start; // 渲染开始点相对该布局的偏移量
+    /* list 自己持有的子布局，不进入 layout_t.sons。
+     * 布局与 darray_t(layout_t*) 一致，源文件中直接交给 da_* 管理。 */
+    struct {
+        layout_t **arr;
+        size_t size;
+        size_t real;
+    } sons;
+
+    size_t i;     // 渲染开始点指向的布局
+    float start;  // 渲染开始点相对该布局的偏移量
 }layout_list_t;
 
+/* create 时传入的子布局会从原 parent 摘下并交给 list 管理；
+ * list_clear() 负责释放它们。direction=0 竖向排列，非 0 横向排列。 */
 layout_list_t *create_layout_list(void *parent,float w,float h,align_t align,int direction,...);
+
+void list_draw(void *l);
+void list_update(void *l);
+void list_clear(void *l);
+void list_mouse(void *l);
 
 #endif

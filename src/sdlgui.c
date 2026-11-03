@@ -26,13 +26,14 @@ void sdlgui_i18n_init(void){
 
 static SDL_Window *window=NULL;
 static SDL_Renderer *renderer=NULL;
-static layout_t root={.son_resizable=1,.update=layout_update};
+static layout_t root={.son_resizable=1,.enable=1,.active=1,.update=layout_update};
 
 static int fontconfig_ready=0;
 
 
 static float mouse_pos[]={0,0};   /* 鼠标在窗口内的位置 */
 static int mouse_buttons[]={0,0,0,0,0};   /* 左 中 右 X1 X2，1=按下 0=未按下 */
+static float mouse_wheel[]={0.0f,0.0f};   /* 两次 update 之间累积的滚动增量 */
 
 
 
@@ -40,11 +41,21 @@ void set_mouse_pos(float x,float y){
     mouse_pos[0]=x;
     mouse_pos[1]=y;
 }
+void set_mouse_wheel(float x,float y){
+    mouse_wheel[0]+=x;
+    mouse_wheel[1]+=y;
+}
 float get_mouse_x(void){
     return mouse_pos[0];
 }
 float get_mouse_y(void){
     return mouse_pos[1];
+}
+float get_mouse_wheel_x(void){
+    return mouse_wheel[0];
+}
+float get_mouse_wheel_y(void){
+    return mouse_wheel[1];
 }
 
 void set_mouse_button(int left,int mid,int right,int x1,int x2){
@@ -202,6 +213,8 @@ void update_root(void){
     root.height=(float)h;
 
     layout_mouse(&root);
+    mouse_wheel[0]=0.0f;   /* 滚轮增量只在本帧的鼠标遍历中生效 */
+    mouse_wheel[1]=0.0f;
     update_sons(&root);
 }
 const layout_t *get_root(void){
@@ -216,6 +229,80 @@ float get_root_w(void){
 }
 float get_root_h(void){
     return root.height;
+}
+
+
+/* 把绘制限制在 [x,x+w) x [y,y+h) 内；已有裁剪区时取交集。
+ * 成功返回 1，old/had_clip 用于 draw_clip_end() 恢复原来的裁剪状态。 */
+static int draw_clip_begin(float x,float y,float w,float h,SDL_Rect *old,int *had_clip){
+    if(renderer==NULL){
+        return 0;
+    }
+    if(w<0.0f){
+        x+=w;
+        w=-w;
+    }
+    if(h<0.0f){
+        y+=h;
+        h=-h;
+    }
+
+    SDL_Rect clip={
+        (int)SDL_floorf(x),(int)SDL_floorf(y),
+        (int)SDL_ceilf(x+w)-(int)SDL_floorf(x),
+        (int)SDL_ceilf(y+h)-(int)SDL_floorf(y)
+    };
+    if(clip.w<=0||clip.h<=0){
+        return 0;
+    }
+
+    *had_clip=SDL_RenderClipEnabled(renderer)?1:0;
+    *old=(SDL_Rect){0,0,0,0};
+    if(*had_clip){
+        if(!SDL_GetRenderClipRect(renderer,old)){
+            return 0;
+        }
+        int left=clip.x>old->x?clip.x:old->x;
+        int top=clip.y>old->y?clip.y:old->y;
+        int right=clip.x+clip.w<old->x+old->w?clip.x+clip.w:old->x+old->w;
+        int bottom=clip.y+clip.h<old->y+old->h?clip.y+clip.h:old->y+old->h;
+        if(right<=left||bottom<=top){
+            return 0;
+        }
+        clip=(SDL_Rect){left,top,right-left,bottom-top};
+    }
+
+    return SDL_SetRenderClipRect(renderer,&clip)?1:0;
+}
+
+static void draw_clip_end(const SDL_Rect *old,int had_clip){
+    SDL_SetRenderClipRect(renderer,had_clip?old:NULL);
+}
+
+/* 递归绘制布局树。每个布局先把裁剪区收窄到自身范围，再绘制自己 */
+static void draw_layout(layout_t *l){
+    if(l==NULL||!l->enable){
+        return;
+    }
+
+    SDL_Rect old;
+    int had_clip=0;
+    if(!draw_clip_begin(l->x,l->y,l->width,l->height,&old,&had_clip)){
+        return;
+    }
+
+    if(l->draw){
+        l->draw(l);
+    }
+    for(size_t i=0;i<l->son_size;i++){
+        draw_layout(l->sons[i]);
+    }
+
+    draw_clip_end(&old,had_clip);
+}
+
+void draw_root(void){
+    draw_layout(&root);
 }
 
 
@@ -336,7 +423,8 @@ void update_sons(void *p){
         }
         if(son[i]->update){
             son[i]->update(son[i]);
-        }else{
+        }
+        if(l->x<get_root_w()*2&&l->y<get_root_h()*2&&l->x+l->width>-get_root_w()*2&&l->y+l->height>-get_root_h()*2){
             update_sons(son[i]);
         }
     }
@@ -352,13 +440,12 @@ void layout_mouse(void *p){
         }
         if(son[i]->mouse){
             son[i]->mouse(son[i]);
-        }else{
-            layout_mouse(son[i]);
         }
+        layout_mouse(son[i]);
     }
 }
 
-void update_layout_only(void *p){
+void layout_update(void *p){
     sublayout_t *l=p;
     if(l==NULL){
         return;
@@ -421,22 +508,6 @@ void update_layout_only(void *p){
     }
 }
 
-void layout_update(void *p){
-    layout_t *l=p;
-    if(l==NULL){
-        return;
-    }
-    if(l->parent){
-        update_layout_only(l);
-    }
-    if(l->draw){
-        l->draw(l);
-    }
-    if(l->x<get_root_w()*2&&l->y<get_root_h()*2&&l->x+l->width>-get_root_w()*2&&l->y+l->height>-get_root_h()*2){
-        update_sons(l);
-    }
-}
-
 
 
 layout_rect_t *create_layout_rect(void *parent,float w,float h,align_t align){
@@ -461,7 +532,7 @@ static void draft_update_layout(sublayout_t *sl){
     if(sl->parent==NULL){
         sl->parent=(sublayout_t *)&root;
     }
-    update_layout_only(sl);
+    layout_update(sl);
 }
 
 static SDL_Color draft_color(unsigned color){
@@ -1149,13 +1220,13 @@ void draft_draw_texture(void *p){
    每个子布局结构体的第一个成员都是 bbox_check_func check，指到下面自己的函数。
    签名统一为 int (*)(void *sublayout,float x,float y)：
    x,y 是鼠标的窗口坐标，子布局的 x/y 也已经是窗口绝对坐标
-   （相对定位由 update_layout_only() 按 parent+align 算好，这里不再加偏移）。
+   （相对定位由 layout_update() 按 parent+align 算好，这里不再加偏移）。
    命中返回 TRUE。 */
 
 int bbox_check_rect(void *p,float x,float y){ /* 矩形 */
     bbox_default_t *sl=p;
     /* check 在 SUBLAYOUT_DEF 前面，parent 才是 sublayout_t 的起点 */
-    update_layout_only((sublayout_t *)&sl->parent);
+    layout_update((sublayout_t *)&sl->parent);
 
     return x>=sl->x && x<=sl->x+sl->width
         && y>=sl->y && y<=sl->y+sl->height;
@@ -1163,7 +1234,7 @@ int bbox_check_rect(void *p,float x,float y){ /* 矩形 */
 
 int bbox_check_triangle(void *p,float x,float y){
     bbox_triangle_t *sl=p;
-    update_layout_only((sublayout_t *)&sl->parent);
+    layout_update((sublayout_t *)&sl->parent);
 
     float x1=sl->x+sl->points[0][0], y1=sl->y+sl->points[0][1];
     float x2=sl->x+sl->points[1][0], y2=sl->y+sl->points[1][1];
@@ -1180,7 +1251,7 @@ int bbox_check_triangle(void *p,float x,float y){
 
 int bbox_check_rrect(void *p,float x,float y){ /* 圆角矩形 */
     bbox_rrect_t *sl=p;
-    update_layout_only((sublayout_t *)&sl->parent);
+    layout_update((sublayout_t *)&sl->parent);
 
     float w=sl->width, h=sl->height;
     float px=x-sl->x;
@@ -1210,7 +1281,7 @@ int bbox_check_rrect(void *p,float x,float y){ /* 圆角矩形 */
 int bbox_check_circle_w(void *p,float x,float y){
     /* 高向宽看齐：直径取 width，圆心在判定框中心（宽>高时圆会上下超出框） */
     bbox_default_t *sl=p;
-    update_layout_only((sublayout_t *)&sl->parent);
+    layout_update((sublayout_t *)&sl->parent);
 
     float r=sl->width/2.0f;
     float cx=sl->x+sl->width/2.0f;
@@ -1222,7 +1293,7 @@ int bbox_check_circle_w(void *p,float x,float y){
 int bbox_check_circle_h(void *p,float x,float y){
     /* 宽向高看齐：直径取 height，圆心在判定框中心（高>宽时圆会左右超出框） */
     bbox_default_t *sl=p;
-    update_layout_only((sublayout_t *)&sl->parent);
+    layout_update((sublayout_t *)&sl->parent);
 
     float r=sl->height/2.0f;
     float cx=sl->x+sl->width/2.0f;
@@ -1348,17 +1419,17 @@ static void button_update_status(layout_button_t *l,button_status_t status){
 }
 
 /* 鼠标事件可能发生在 update_sons() 之前，先把自身及祖先布局位置算对 */
-static void button_update_ancestor_layouts(sublayout_t *sl){
+static void layout_update_ancestors(sublayout_t *sl){
     if(sl->parent!=NULL){
-        button_update_ancestor_layouts(sl->parent);
+        layout_update_ancestors(sl->parent);
     }
-    update_layout_only(sl);
+    layout_update(sl);
 }
 
 void button_mouse(void *p){
     layout_button_t *l=p;
 
-    button_update_ancestor_layouts((sublayout_t *)&l->l);
+    layout_update_ancestors((sublayout_t *)&l->l);
 
     int hover=FALSE;
     for(size_t i=0;i<l->bboxes_size;i++){
@@ -1396,8 +1467,7 @@ void button_mouse(void *p){
     }else{
         button_update_status(l,BUTTON_STATUS_OUT);
     }
-
-    layout_mouse(p);
+    /* 子布局的鼠标遍历由 layout_mouse() 统一继续，这里不递归 */
 }
 
 
@@ -1445,7 +1515,7 @@ layout_animation_t *create_layout_animation(void *p,animate_func animation,...){
         animation_draw,
         layout_update,
         animation_clear,
-        layout_mouse,
+        NULL,
         align
     );
     if(ret==NULL){
@@ -1523,16 +1593,228 @@ void animation_clear(void *p){
 }
 
 
+#define LIST_WHEEL_STEP 32.0f
+
+/* list 的子布局存放在自己的 sons 里，不进入 layout_t.sons，
+ * 所以通用的 update_sons()/layout_mouse()/draw_root() 不会遍历它们。
+ * 每个子布局的 parent 指向前一个子布局，第一个子布局的 parent 临时指向
+ * list 自身；list 自己负责从当前起点开始按可见性更新/绘制/处理鼠标。 */
+
+static float list_item_extent(const layout_list_t *l,const layout_t *item){
+    return l->direction?item->width:item->height;
+}
+
+static float list_view_extent(const layout_list_t *l){
+    return l->direction?l->l.width:l->l.height;
+}
+
+static float list_content_extent(const layout_list_t *l){
+    float total=0.0f;
+    for(size_t i=0;i<l->sons.size;i++){
+        total+=list_item_extent(l,l->sons.arr[i]);
+    }
+    return total;
+}
+
+static float list_scroll_offset(const layout_list_t *l){
+    float offset=l->start;
+    if(l->i>l->sons.size){
+        return offset;
+    }
+    for(size_t i=0;i<l->i;i++){
+        offset+=list_item_extent(l,l->sons.arr[i]);
+    }
+    return offset;
+}
+
+/* 把绝对滚动量换算回 (i,start)：i 是第一个可见子布局，
+ * start 是它相对 list 起点已经滚过去的距离。 */
+static void list_set_scroll_offset(layout_list_t *l,float offset){
+    if(l->sons.size==0){
+        l->i=0;
+        l->start=0.0f;
+        return;
+    }
+    if(offset<0.0f){
+        offset=0.0f;
+    }
+
+    size_t i=0;
+    while(i+1<l->sons.size){
+        float extent=list_item_extent(l,l->sons.arr[i]);
+        if(extent>0.0f&&offset>=extent){
+            offset-=extent;
+            i++;
+        }else{
+            break;
+        }
+    }
+    l->i=i;
+    l->start=offset;
+}
+
+static void list_refresh_slidable(layout_list_t *l){
+    float content=list_content_extent(l);
+    float view=list_view_extent(l);
+    l->can_be_slided=(content>view+0.5f)?1:0;
+    if(!l->can_be_slided){
+        l->i=0;
+        l->start=0.0f;
+    }
+}
+
+static void list_clamp_scroll(layout_list_t *l,float offset){
+    float content=list_content_extent(l);
+    float view=list_view_extent(l);
+    float max_offset=content-view;
+    if(max_offset<0.0f){
+        max_offset=0.0f;
+    }
+    if(offset<0.0f){
+        offset=0.0f;
+    }else if(offset>max_offset){
+        offset=max_offset;
+    }
+    list_set_scroll_offset(l,offset);
+}
+
+static int list_item_after_view(const layout_list_t *l,const layout_t *item){
+    if(l->direction){
+        return item->x>=l->l.x+l->l.width;
+    }
+    return item->y>=l->l.y+l->l.height;
+}
+
+static int list_item_before_view(const layout_list_t *l,const layout_t *item){
+    if(l->direction){
+        return item->x+item->width<=l->l.x;
+    }
+    return item->y+item->height<=l->l.y;
+}
+
+/* 第一个子布局对齐到 list：沿延伸方向再减去 start。 */
+static void list_set_start_align(layout_list_t *l,layout_t *item){
+    if(l->direction==0){
+        item->align.horizon=2;
+        item->align.horizon_offset=item->width;
+        item->align.vertical=2;
+        item->align.vertical_offset=item->height-l->start;
+    }else{
+        item->align.horizon=2;
+        item->align.horizon_offset=item->width-l->start;
+        item->align.vertical=2;
+        item->align.vertical_offset=item->height;
+    }
+}
+
+/* 后续子布局对齐到前一个：横向排就放在右边，纵向排就放在下边。 */
+static void list_set_next_align(layout_list_t *l,layout_t *item){
+    if(l->direction==0){
+        item->align.horizon=2;
+        item->align.horizon_offset=item->width;   /* x = 前一个的 x */
+        item->align.vertical=1;
+        item->align.vertical_offset=0.0f;         /* y = 前一个的下边 */
+    }else{
+        item->align.horizon=1;
+        item->align.horizon_offset=0.0f;          /* x = 前一个的右边 */
+        item->align.vertical=2;
+        item->align.vertical_offset=item->height; /* y = 前一个的 y */
+    }
+}
+
+static int list_mouse_inside(const layout_list_t *l){
+    float x=get_mouse_x();
+    float y=get_mouse_y();
+    return x>=l->l.x&&x<=l->l.x+l->l.width
+        && y>=l->l.y&&y<=l->l.y+l->l.height;
+}
+
+static void list_handle_wheel(layout_list_t *l){
+    if(l->sons.size==0||!list_mouse_inside(l)){
+        return;
+    }
+    list_refresh_slidable(l);
+    if(!l->can_be_slided){
+        return;
+    }
+
+    float delta;
+    if(l->direction){
+        /* 触摸板横向滚动优先；普通滚轮竖向滚动也映射为横向。 */
+        delta=get_mouse_wheel_x()-get_mouse_wheel_y();
+    }else{
+        delta=-get_mouse_wheel_y();
+    }
+    if(delta==0.0f){
+        return;
+    }
+
+    list_clamp_scroll(l,list_scroll_offset(l)+delta*LIST_WHEEL_STEP);
+    mouse_wheel[0]=0.0f;
+    mouse_wheel[1]=0.0f;
+}
+
+/* 把从 i 开始的可见子布局排好。start 子布局的 parent 临时指向 list，
+ * 后续子布局按 parent 链依次对齐；一旦某个子布局完全离开视口就停止。 */
+static void list_begin(layout_list_t *l){
+    if(l->sons.size==0){
+        return;
+    }
+    if(l->l.parent!=NULL){
+        layout_update(&l->l);
+    }
+
+    list_refresh_slidable(l);
+    if(l->i>=l->sons.size){
+        l->i=l->sons.size-1;
+    }
+    list_clamp_scroll(l,list_scroll_offset(l));
+
+    layout_t *prev=NULL;
+    for(size_t i=l->i;i<l->sons.size;i++){
+        layout_t *item=l->sons.arr[i];
+        if(i==l->i){
+            item->parent=(sublayout_t *)&l->l;
+            list_set_start_align(l,item);
+        }else{
+            item->parent=(sublayout_t *)prev;
+            list_set_next_align(l,item);
+        }
+
+        if(item->update!=NULL){
+            item->update(item);
+        }else{
+            layout_update(item);
+        }
+        update_sons(item);
+        prev=item;
+
+        if(list_item_after_view(l,item)){
+            break;
+        }
+    }
+}
+
+/* start 子布局在正常链里的 parent 是前一个；操作结束后恢复，
+ * 下次它作为后续子布局时仍能按链定位。 */
+static void list_end(layout_list_t *l){
+    if(l->sons.size==0||l->i==0||l->i>=l->sons.size){
+        return;
+    }
+    l->sons.arr[l->i]->parent=(sublayout_t *)l->sons.arr[l->i-1];
+}
+
 layout_list_t *create_layout_list(void *parent,float w,float h,align_t align,int direction,...){
     layout_t *parent_layout=parent?parent:&root;
     layout_list_t *l=create_layout(
-        sizeof(layout_list_t),parent_layout,w,h,NULL,layout_update,NULL,layout_mouse,align);
+        sizeof(layout_list_t),parent_layout,w,h,list_draw,list_update,list_clear,list_mouse,align);
     if(l==NULL){
         return NULL;
     }
 
     l->direction=direction?1u:0u;
-    l->limited=0;
+    l->can_be_slided=0;
+    da_init(&l->sons);
     l->i=0;
     l->start=0.0f;
 
@@ -1541,19 +1823,92 @@ layout_list_t *create_layout_list(void *parent,float w,float h,align_t align,int
 
     layout_t *layout=NULL;
     while((layout=va_arg(arg,layout_t*))!=NULL){
-        /* 从原 parent 摘下并挂到 list，孩子所有权归 list */
-        if(!layout_attach(layout,(layout_t *)l)){
-            continue;
+        if(da_add(sizeof(layout_t*),&l->sons,&layout)!=0){
+            break;
         }
-        if(l->direction==0){
-            layout->align.vertical=1;
-            layout->align.vertical_offset=layout->height;
+
+        /* 子布局从原 parent 摘下，改由 list 自己持有；不再挂到 l->l.sons。 */
+        layout_detach(layout);
+        size_t index=l->sons.size-1;
+
+        if(index==0){
+            layout->parent=(sublayout_t *)&l->l;
+            list_set_start_align(l,layout);
         }else{
-            layout->align.horizon=2;
-            layout->align.horizon_offset=layout->width;
+            layout->parent=(sublayout_t *)l->sons.arr[index-1];
+            list_set_next_align(l,layout);
         }
     }
 
     va_end(arg);
+    list_refresh_slidable(l);
     return l;
+}
+
+void list_clear(void *p){
+    layout_list_t *l=p;
+    if(l==NULL){
+        return;
+    }
+    for(size_t i=0;i<l->sons.size;i++){
+        delete_layout(l->sons.arr[i]);
+    }
+    da_clear(&l->sons);
+    l->i=0;
+    l->start=0.0f;
+    l->can_be_slided=0;
+}
+
+void list_update(void *p){
+    layout_list_t *l=p;
+    if(l==NULL){
+        return;
+    }
+    list_begin(l);
+    list_end(l);
+}
+
+void list_draw(void *p){
+    layout_list_t *l=p;
+    if(l==NULL||l->sons.size==0){
+        return;
+    }
+
+    list_begin(l);
+    for(size_t i=l->i;i<l->sons.size;i++){
+        layout_t *item=l->sons.arr[i];
+        if(list_item_after_view(l,item)){
+            break;
+        }
+        if(!list_item_before_view(l,item)){
+            draw_layout(item);
+        }
+    }
+    list_end(l);
+}
+
+void list_mouse(void *p){
+    layout_list_t *l=p;
+    if(l==NULL){
+        return;
+    }
+
+    layout_update_ancestors((sublayout_t *)&l->l);
+    list_handle_wheel(l);
+    list_begin(l);
+
+    for(size_t i=l->i;i<l->sons.size;i++){
+        layout_t *item=l->sons.arr[i];
+        if(list_item_after_view(l,item)){
+            break;
+        }
+        if(list_item_before_view(l,item)||!item->enable||!item->active){
+            continue;
+        }
+        if(item->mouse!=NULL){
+            item->mouse(item);
+        }
+        layout_mouse(item);
+    }
+    list_end(l);
 }

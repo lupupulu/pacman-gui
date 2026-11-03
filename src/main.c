@@ -39,6 +39,18 @@ void update_mouse_button(const SDL_Event *ev){
                      (m&SDL_BUTTON_X2MASK)!=0);
 }
 
+/* 滚轮和触摸板滚动都走 SDL_EVENT_MOUSE_WHEEL，y 正方向是滚轮向上 */
+void update_mouse_wheel(const SDL_Event *ev){
+    if(ev->type!=SDL_EVENT_MOUSE_WHEEL){
+        return;
+    }
+    if(get_window()==NULL||ev->wheel.windowID!=SDL_GetWindowID(get_window())){
+        return;   /* 不是本窗口的滚轮 */
+    }
+    set_mouse_pos(ev->wheel.mouse_x,ev->wheel.mouse_y);
+    set_mouse_wheel(ev->wheel.x,ev->wheel.y);
+}
+
 static void test_button_callback(int status,void *data){
     (void)data;
     if(status==BUTTON_STATUS_TRIGGER){
@@ -79,6 +91,8 @@ int main(int argc,char *argv[]){
             }else if(ev.type==SDL_EVENT_MOUSE_BUTTON_DOWN
                   || ev.type==SDL_EVENT_MOUSE_BUTTON_UP){
                 update_mouse_button(&ev);
+            }else if(ev.type==SDL_EVENT_MOUSE_WHEEL){
+                update_mouse_wheel(&ev);
             }
         }
 
@@ -89,6 +103,7 @@ int main(int argc,char *argv[]){
         SDL_RenderClear(get_renderer());
 
         update_root();
+        draw_root();
 
         SDL_RenderPresent(get_renderer());
     }

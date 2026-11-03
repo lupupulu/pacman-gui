@@ -101,7 +101,7 @@ widget_button_t *widget_create_button(void *parent,float width,align_t align,con
         NULL,
         layout_update,
         widget_clear,
-        layout_mouse,
+        NULL,
         align
     );
     if(widget==NULL){
