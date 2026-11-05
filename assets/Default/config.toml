@@ -6,6 +6,7 @@
 #   default            启动时用哪个主题（对应下面的 [表名]）
 #   fonts              字体族，按优先级排列（缺字形时依次回退）
 #   text_size          各级字号，单位 pt
+#   icon_path          图标目录；相对 config.toml 所在目录，不写时为 <配置目录>/icon
 #   item_height        列表项 / 按钮的高度，单位 px
 #   button_height      默认按钮高度，单位 px（不得高于 item_height）
 #   button_animation_time  按钮颜色渐变动画时长，单位 ms
@@ -26,6 +27,7 @@ item_height = 32.0
 button_height = 32.0
 button_animation_time = 200
 rect_round_corner = 10.0
+# icon_path = "icon"
 
 [Bright]
 color = [ 0xEFF1F5FF, 0xCCD0DAFF, 0x8CAAEEFF, 0xFE640BFF, 0xABC4FFFF ]

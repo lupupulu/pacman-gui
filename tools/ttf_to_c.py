@@ -72,7 +72,9 @@ def write_if_changed(path: Path, text: str) -> bool:
         return False
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(text, encoding="utf-8", newline="\n")
+    # 不用 Path.write_text(newline=...)：Python 3.9 还不支持 newline 参数
+    with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+        stream.write(text)
     os.replace(temporary, path)
     return True
 

@@ -1,8 +1,8 @@
 #include <SDL3/SDL.h>
 #include <SDL3_ttf/SDL_ttf.h>
-#include <fontconfig/fontconfig.h>
 #include "sdlgui.h"
 #include "sdlgui_i18n.h"
+#include "sdlgui_fontlookup.h"
 #include "CDS/confc.h"
 #include <locale.h>
 #include <stdio.h>
@@ -10,17 +10,114 @@
 #include <stdlib.h>
 #include <memory.h>
 #include <string.h>
+#include <unistd.h>
+
+#ifdef SDLGUI_FONT_BACKEND_FONTCONFIG
+#include <fontconfig/fontconfig.h>
+#endif
 
 #include "CDS/darray.h"
 
 #define TRUE  1
 #define FALSE 0
 
+/* ---- 路径工具：主题/资源搜索用 ---- */
+
+static char *gui_join_path(const char *left,const char *right){
+    if(left==NULL){ left=""; }
+    if(right==NULL){ right=""; }
+
+    size_t left_size=strlen(left);
+    size_t right_size=strlen(right);
+    int slash=left_size>0&&left[left_size-1]!='/';
+
+    char *result=malloc(left_size+(size_t)slash+right_size+1);
+    if(result==NULL){
+        return NULL;
+    }
+
+    memcpy(result,left,left_size);
+    size_t pos=left_size;
+    if(slash){
+        result[pos++]='/';
+    }
+    memcpy(result+pos,right,right_size+1);
+    return result;
+}
+
+static int gui_path_readable(const char *path){
+    return path!=NULL&&path[0]!='\0'&&access(path,R_OK)==0;
+}
+
+static char *gui_strdup(const char *text){
+    if(text==NULL){
+        return NULL;
+    }
+    size_t size=strlen(text)+1;
+    char *copy=malloc(size);
+    if(copy!=NULL){
+        memcpy(copy,text,size);
+    }
+    return copy;
+}
+
+/* 把一项追加到 ':' 分隔的搜索路径；失败返回 0，原指针保持有效 */
+static int gui_path_list_add(char **list,const char *entry){
+    if(entry==NULL||entry[0]=='\0'){
+        return 1;
+    }
+
+    size_t old_size=(*list!=NULL)?strlen(*list):0;
+    size_t entry_size=strlen(entry);
+    int colon=old_size>0;
+
+    char *grown=realloc(*list,old_size+(size_t)colon+entry_size+1);
+    if(grown==NULL){
+        return 0;
+    }
+    size_t pos=old_size;
+    if(colon){
+        grown[pos++]=':';
+    }
+    memcpy(grown+pos,entry,entry_size+1);
+    *list=grown;
+    return 1;
+}
+
 void sdlgui_i18n_init(void){
     setlocale(LC_ALL,"");
-    bindtextdomain(SDLGUI_TEXT_DOMAIN,SDLGUI_LOCALEDIR);
+#ifdef SDLGUI_HAVE_GETTEXT
+    /* 优先找可执行文件/应用包旁边的 locale，没有再退回编译时的 SDLGUI_LOCALEDIR */
+    const char *locale_dir=SDLGUI_LOCALEDIR;
+    char *from_base=NULL;
+    char *from_parent=NULL;
+
+    const char *base=SDL_GetBasePath();
+    if(base!=NULL){
+        from_base=gui_join_path(base,"locale");
+        if(!gui_path_readable(from_base)){
+            free(from_base);
+            from_base=NULL;
+            from_parent=gui_join_path(base,"../locale");
+            if(!gui_path_readable(from_parent)){
+                free(from_parent);
+                from_parent=NULL;
+            }
+        }
+    }
+    if(from_base!=NULL){
+        locale_dir=from_base;
+    }else if(from_parent!=NULL){
+        locale_dir=from_parent;
+    }
+
+    bindtextdomain(SDLGUI_TEXT_DOMAIN,locale_dir);
     bind_textdomain_codeset(SDLGUI_TEXT_DOMAIN,"UTF-8");
     textdomain(SDLGUI_TEXT_DOMAIN);
+
+    free(from_base);
+    free(from_parent);
+#endif
 }
 
 
@@ -28,7 +125,51 @@ static SDL_Window *window=NULL;
 static SDL_Renderer *renderer=NULL;
 static layout_t root={.son_resizable=1,.enable=1,.active=1,.update=layout_update};
 
+static float ui_scale=1.0f;   /* 逻辑点 -> 物理像素，启动时锁定 */
+static int ui_scale_locked=0; /* 字体/纹理缓存按启动时的缩放栅格化 */
+static int logical_width=0;   /* 当前逻辑呈现尺寸，0 表示还没设置 */
+static int logical_height=0;
+
+#ifdef SDLGUI_FONT_BACKEND_FONTCONFIG
 static int fontconfig_ready=0;
+#endif
+
+float sdlgui_get_scale(void){
+    return ui_scale;
+}
+
+/* 让逻辑坐标与窗口点一一对应，物理输出由 SDL 放大到 Retina 像素。
+ * ui_scale 供字体栅格化使用，避免高分屏上文字只有一半大小。 */
+static void sync_render_geometry(void){
+    if(window==NULL||renderer==NULL){
+        return;
+    }
+
+    int w=0,h=0;
+    int pixel_w=0,pixel_h=0;
+    if(!SDL_GetWindowSize(window,&w,&h)||w<=0||h<=0){
+        return;
+    }
+
+    if(SDL_GetWindowSizeInPixels(window,&pixel_w,&pixel_h)&&pixel_w>0&&pixel_h>0){
+        float scale=(float)pixel_w/(float)w;
+        /* 字体和文字纹理在启动时按当时的缩放栅格化；之后换显示器只调整
+         * 逻辑呈现，避免纹理尺寸和坐标比例对不上（会裁掉一半文字）。 */
+        if(scale>0.0f&&!ui_scale_locked){
+            ui_scale=scale;
+        }
+    }
+
+    if(w!=logical_width||h!=logical_height){
+        if(SDL_SetRenderLogicalPresentation(renderer,w,h,SDL_LOGICAL_PRESENTATION_STRETCH)){
+            logical_width=w;
+            logical_height=h;
+        }else{
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        _("SetRenderLogicalPresentation failed: %s"),SDL_GetError());
+        }
+    }
+}
 
 
 static float mouse_pos[]={0,0};   /* 鼠标在窗口内的位置 */
@@ -82,7 +223,7 @@ int get_mouse_x2(void){
 }
 
 
-/* 在 SDLGUI_THEME_PATH 中查找 <name>/config.toml，返回 malloc 路径 */
+/* 在主题搜索路径中查找 <name>/config.toml，返回 malloc 路径 */
 static char *find_theme_config(const char *theme_path,const char *name){
     size_t size=strlen(name)+sizeof("/config.toml");
     char *target=malloc(size);
@@ -95,11 +236,39 @@ static char *find_theme_config(const char *theme_path,const char *name){
     return found;
 }
 
-/* theme 是主题名；找不到指定主题时回退 Default，再回退内置主题 */
+/* 运行时主题目录：可执行文件/应用包里的 assets、当前平台的用户/系统目录。
+ * SDLGUI_THEME_PATH 环境变量会完全覆盖这份列表（见 load_theme_by_name）。 */
+static char *build_theme_search_path(void){
+    char *list=NULL;
+
+    const char *base=SDL_GetBasePath();
+    if(base!=NULL){
+        static const char *subdirs[]={"assets","../assets","themes"};
+        for(size_t i=0;i<sizeof(subdirs)/sizeof(subdirs[0]);i++){
+            char *entry=gui_join_path(base,subdirs[i]);
+            if(entry!=NULL){
+                gui_path_list_add(&list,entry);
+                free(entry);
+            }
+        }
+    }
+
+    gui_path_list_add(&list,SDLGUI_THEME_PATH);
+    return list;
+}
+
+/* 主题是主题名；找不到指定主题时回退 Default，再回退内置主题 */
 static void load_theme_by_name(const char *theme){
     const char *theme_path=getenv("SDLGUI_THEME_PATH");
+    char *owned=NULL;
+
     if(theme_path==NULL||theme_path[0]=='\0'){
-        theme_path=SDLGUI_THEME_PATH;
+        owned=build_theme_search_path();
+        if(owned!=NULL){
+            theme_path=owned;
+        }else{
+            theme_path=SDLGUI_THEME_PATH;
+        }
     }
 
     const char *name=(theme!=NULL&&theme[0]!='\0')?theme:"Default";
@@ -108,6 +277,7 @@ static void load_theme_by_name(const char *theme){
         found=find_theme_config(theme_path,"Default");
     }
     if(found==NULL){
+        free(owned);
         return;   /* 保持内置主题 */
     }
 
@@ -117,6 +287,49 @@ static void load_theme_by_name(const char *theme){
         theme_set(".",found);
     }
     free(found);
+    free(owned);
+}
+
+/* 找资源文件：先按当前目录/绝对路径找，再找可执行文件旁边和上一级。
+ * 应用包里的 assets 在 Contents/Resources/assets，开发时在仓库 assets。 */
+static char *resolve_asset_path(const char *path){
+    if(path==NULL||path[0]=='\0'){
+        return NULL;
+    }
+    if(gui_path_readable(path)){
+        return gui_strdup(path);
+    }
+    if(path[0]=='/'){
+        return NULL;
+    }
+
+    const char *base=SDL_GetBasePath();
+    if(base==NULL){
+        return NULL;
+    }
+
+    char *result=NULL;
+    char *candidate=gui_join_path(base,path);
+    if(gui_path_readable(candidate)){
+        result=candidate;
+        candidate=NULL;
+    }
+    free(candidate);
+
+    if(result==NULL){
+        char *parent=gui_join_path(base,"..");
+        if(parent!=NULL){
+            candidate=gui_join_path(parent,path);
+            if(gui_path_readable(candidate)){
+                result=candidate;
+                candidate=NULL;
+            }
+            free(candidate);
+            free(parent);
+        }
+    }
+
+    return result;
 }
 
 void sdlgui_init(const char *title,int width,int height,const char *iconpath,const char *theme){
@@ -127,7 +340,9 @@ void sdlgui_init(const char *title,int width,int height,const char *iconpath,con
         exit(1);
     }
 
-    if(!SDL_CreateWindowAndRenderer(title,width,height,SDL_WINDOW_RESIZABLE,&window,&renderer)){
+    if(!SDL_CreateWindowAndRenderer(title,width,height,
+                                   SDL_WINDOW_RESIZABLE|SDL_WINDOW_HIGH_PIXEL_DENSITY,
+                                   &window,&renderer)){
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("Create window/renderer failed: %s"),SDL_GetError());
         TTF_Quit();
         SDL_Quit();
@@ -136,15 +351,20 @@ void sdlgui_init(const char *title,int width,int height,const char *iconpath,con
 
     SDL_SetRenderVSync(renderer,1);
 
+    /* 先确定 Retina 缩放和逻辑坐标，后面字体按这个比例栅格化 */
+    sync_render_geometry();
+
+#ifdef SDLGUI_FONT_BACKEND_FONTCONFIG
     if(!FcInit()){
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("FcInit failed"));
         sdlgui_quit();
         exit(1);
     }
     fontconfig_ready=1;
+#endif
 
-    if(!theme_load_default_font()){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("Failed to load the embedded default font"));
+    if(!theme_init()){
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("Failed to initialize the theme"));
         sdlgui_quit();
         exit(1);
     }
@@ -155,8 +375,13 @@ void sdlgui_init(const char *title,int width,int height,const char *iconpath,con
     /* 内置主题也跟随系统亮/暗；加载主题后 theme_set() 会再应用一次 */
     theme_select_system();
 
+    ui_scale_locked=1;
+
     if(iconpath!=NULL){
-        SDL_Surface *icon=SDL_LoadSurface(iconpath);
+        /* macOS 上窗口图标无效，但开发时其他平台仍然需要 */
+        char *resolved=resolve_asset_path(iconpath);
+        SDL_Surface *icon=SDL_LoadSurface(resolved!=NULL?resolved:iconpath);
+        free(resolved);
         if(!icon){
             SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,_("Icon load failed: %s"),SDL_GetError());
         }else{
@@ -174,10 +399,12 @@ void sdlgui_quit(void){
     theme_quit();
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
+#ifdef SDLGUI_FONT_BACKEND_FONTCONFIG
     if(fontconfig_ready){
         FcFini();
         fontconfig_ready=0;
     }
+#endif
     TTF_Quit();
     SDL_Quit();
 }
@@ -204,10 +431,20 @@ void resize_root(int w,int h){
 }
 
 void update_root(void){
-    int w,h;
-    if(!SDL_GetWindowSizeInPixels(window,&w,&h)){
+    if(window==NULL||renderer==NULL){
+        return;
+    }
+
+    /* 布局一律用窗口的逻辑尺寸（点），鼠标事件坐标也是同一套坐标 */
+    sync_render_geometry();
+
+    int w=0,h=0;
+    if(!SDL_GetWindowSize(window,&w,&h)){
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("Get size of window failed: %s"),SDL_GetError());
         return;
+    }
+    if(w<=0||h<=0){
+        return;   /* 最小化时保留上一次的布局尺寸 */
     }
     root.width=(float)w;
     root.height=(float)h;
@@ -524,8 +761,6 @@ layout_rect_t *create_layout_rect(void *parent,float w,float h,align_t align){
 
 #define DRAFT_SUBLAYOUT(d) ((sublayout_t *)&(d)->parent)
 
-static void draft_text_clear_entry(void *p);
-static void draft_texture_clear_entry(void *p);
 static int draft_text_build_cache(draft_text_t *d);
 
 static void draft_update_layout(sublayout_t *sl){
@@ -793,7 +1028,7 @@ draft_text_t *draft_create_text(align_t align,TTF_Font *font,char *context,float
         return NULL;
     }
     d->draw=draft_draw_text;
-    d->clear=draft_text_clear_entry;
+    d->clear=draft_text_clear;
     d->parent=NULL;
     d->align=align;
     d->width=0.0f;
@@ -814,7 +1049,8 @@ draft_text_t *draft_create_text(align_t align,TTF_Font *font,char *context,float
 }
 
 /* 释放 can_change=0 时缓存的整段纹理 */
-void draft_text_clear(draft_text_t *d){
+void draft_text_clear(void *p){
+    draft_text_t *d=p;
     if(d==NULL){
         return;
     }
@@ -824,10 +1060,6 @@ void draft_text_clear(draft_text_t *d){
     }
     d->cache_width=0.0f;
     d->cache_height=0.0f;
-}
-
-static void draft_text_clear_entry(void *p){
-    draft_text_clear((draft_text_t *)p);
 }
 
 /* can_enter=0：把换行压成空格，整段按单行处理 */
@@ -850,16 +1082,22 @@ static SDL_Surface *draft_text_render_segment(draft_text_t *d,const char *text,s
         return NULL;
     }
     if(d->width_limit>0.0f){
-        return TTF_RenderText_Blended_Wrapped(d->font,text,length,color,(int)(d->width_limit+0.5f));
+        /* 宽度限制是逻辑坐标，换行宽度要换算成物理像素 */
+        int wrap=(int)(d->width_limit*sdlgui_get_scale()+0.5f);
+        if(wrap<1){
+            wrap=1;
+        }
+        return TTF_RenderText_Blended_Wrapped(d->font,text,length,color,wrap);
     }
     return TTF_RenderText_Blended(d->font,text,length,color);
 }
 
-/* 计算最终渲染宽高；height_limit>0 时高度按裁剪后的结果算 */
+/* 计算最终渲染宽高（逻辑坐标）；height_limit>0 时高度按裁剪后的结果算 */
 static int draft_text_measure_size(draft_text_t *d,float *out_width,float *out_height){
     if(d->font==NULL||d->context==NULL||d->context[0]=='\0'){
         return 0;
     }
+    float scale=sdlgui_get_scale();
     int line_height=TTF_GetFontHeight(d->font);
     if(line_height<=0){
         return 0;
@@ -905,20 +1143,21 @@ static int draft_text_measure_size(draft_text_t *d,float *out_width,float *out_h
         return 0;
     }
 
-    int final_height=total_height;
-    if(d->height_limit>0.0f&&(float)final_height>d->height_limit){
-        final_height=(int)(d->height_limit+0.5f);
+    float final_height=(float)total_height/scale;
+    if(d->height_limit>0.0f&&final_height>d->height_limit){
+        final_height=d->height_limit;
     }
-    if(final_height<=0){
+    if(final_height<=0.0f){
         return 0;
     }
 
-    *out_width=(float)max_width;
-    *out_height=(float)final_height;
+    *out_width=(float)max_width/scale;
+    *out_height=final_height;
     return 1;
 }
 
-/* can_change=0：把整段文本合成为一张纹理，之后只做 blit */
+/* can_change=0：把整段文本合成为一张纹理，之后只做 blit。
+ * 合成表面用物理像素，d->width/height 存逻辑尺寸。 */
 static int draft_text_build_cache(draft_text_t *d){
     int line_height=TTF_GetFontHeight(d->font);
     if(line_height<=0){
@@ -936,7 +1175,7 @@ static int draft_text_build_cache(draft_text_t *d){
         context=single_line;
     }
 
-    /* 第一遍：算总宽高 */
+    /* 第一遍：算总宽高（物理像素） */
     int max_width=0;
     int total_height=0;
     const char *start=context;
@@ -1004,25 +1243,27 @@ static int draft_text_build_cache(draft_text_t *d){
     }
     SDL_SetTextureScaleMode(cache,SDL_SCALEMODE_NEAREST);
 
+    float scale=sdlgui_get_scale();
     d->cache=cache;
-    d->cache_width=(float)max_width;
+    d->cache_width=(float)max_width;     /* 物理像素 */
     d->cache_height=(float)total_height;
 
-    int final_height=total_height;
-    if(d->height_limit>0.0f&&(float)final_height>d->height_limit){
-        final_height=(int)(d->height_limit+0.5f);
+    d->width=(float)max_width/scale;     /* 逻辑坐标 */
+    d->height=(float)total_height/scale;
+    if(d->height_limit>0.0f&&d->height>d->height_limit){
+        d->height=d->height_limit;
     }
-    d->width=(float)max_width;
-    d->height=(float)final_height;
     return 1;
 }
 
 /* can_change!=0：每帧重新画，不保留缓存 */
 static void draft_text_draw_direct(draft_text_t *d){
-    int line_height=TTF_GetFontHeight(d->font);
-    if(line_height<=0){
+    float scale=sdlgui_get_scale();
+    int line_height_px=TTF_GetFontHeight(d->font);
+    if(line_height_px<=0){
         return;
     }
+    float line_height=(float)line_height_px/scale;
 
     SDL_Color color=draft_color(d->color);
     const char *context=d->context;
@@ -1043,9 +1284,9 @@ static void draft_text_draw_direct(draft_text_t *d){
         size_t length=end?(size_t)(end-start):strlen(start);
 
         SDL_Surface *surface=draft_text_render_segment(d,start,length,color);
-        float advance=(float)line_height;
+        float advance=line_height;
         if(surface!=NULL){
-            float draw_height=(float)surface->h;
+            float draw_height=(float)surface->h/scale;
             if(d->height_limit>0.0f){
                 float remain=d->height_limit-used;
                 if(remain<=0.0f){
@@ -1060,13 +1301,18 @@ static void draft_text_draw_direct(draft_text_t *d){
             SDL_Texture *tex=SDL_CreateTextureFromSurface(renderer,surface);
             if(tex!=NULL){
                 SDL_SetTextureScaleMode(tex,SDL_SCALEMODE_NEAREST);
-                SDL_FRect src={.x=0,.y=0,.w=(float)surface->w,.h=draw_height};
-                SDL_FRect dst={.x=SDL_roundf(d->x),.y=SDL_roundf(y),.w=(float)surface->w,.h=draw_height};
+                float src_height=draw_height*scale;
+                if(src_height>(float)surface->h){
+                    src_height=(float)surface->h;
+                }
+                SDL_FRect src={.x=0,.y=0,.w=(float)surface->w,.h=src_height};
+                SDL_FRect dst={.x=SDL_roundf(d->x),.y=SDL_roundf(y),
+                               .w=(float)surface->w/scale,.h=draw_height};
                 SDL_RenderTexture(renderer,tex,&src,&dst);
                 SDL_DestroyTexture(tex);
             }
             if(d->width_limit>0.0f){
-                advance=(float)surface->h;
+                advance=(float)surface->h/scale;
             }
             SDL_DestroySurface(surface);
         }
@@ -1123,26 +1369,57 @@ void draft_draw_text(void *p){
         return;
     }
 
-    SDL_FRect src={.x=0,.y=0,.w=width,.h=height};
+    /* 纹理按物理像素缓存，dst 用逻辑尺寸；两者相差 ui_scale 倍 */
+    float src_height=height*sdlgui_get_scale();
+    if(src_height>d->cache_height){
+        src_height=d->cache_height;
+    }
+    SDL_FRect src={.x=0,.y=0,.w=d->cache_width,.h=src_height};
     SDL_FRect dst={.x=SDL_roundf(d->x),.y=SDL_roundf(d->y),.w=width,.h=height};
     SDL_RenderTexture(renderer,d->cache,&src,&dst);
 }
 
-void draft_texture_clear(draft_texture_t *d){
+void draft_texture_clear(void *p){
+    draft_texture_t *d=p;
     if(d==NULL){
         return;
     }
     if(d->tex!=NULL){
-        SDL_DestroyTexture(d->tex);
+        if(d->owns_texture){
+            SDL_DestroyTexture(d->tex);
+        }
         d->tex=NULL;
     }
+    d->owns_texture=0;
 }
 
-static void draft_texture_clear_entry(void *p){
-    draft_texture_clear((draft_texture_t *)p);
+/* 公共入口只接收用户已有的纹理，不接管所有权；失败时 tex 仍归调用方。 */
+draft_texture_t *draft_create_texture(align_t align,SDL_Texture *tex){
+    if(tex==NULL){
+        return NULL;
+    }
+
+    draft_texture_t *d=calloc(1,sizeof(*d));
+    if(d==NULL){
+        return NULL;
+    }
+    d->draw=draft_draw_texture;
+    d->clear=draft_texture_clear;
+    d->parent=NULL;
+    d->align=align;
+    d->tex=tex;
+    d->owns_texture=0;
+
+    if(!SDL_GetTextureSize(tex,&d->width,&d->height)){
+        d->tex=NULL;
+        free(d);
+        return NULL;
+    }
+    return d;
 }
 
-static draft_texture_t *draft_create_texture(align_t align,SDL_Surface *surface){
+/* 图片加载路径自己创建纹理，也由自己释放，所以不经过 draft_create_texture。 */
+static draft_texture_t *draft_create_texture_from_surface(align_t align,SDL_Surface *surface){
     if(surface==NULL){
         return NULL;
     }
@@ -1151,24 +1428,26 @@ static draft_texture_t *draft_create_texture(align_t align,SDL_Surface *surface)
         return NULL;
     }
 
-    draft_texture_t *d=calloc(1,sizeof(*d));
-    if(d==NULL){
-        SDL_DestroySurface(surface);
-        return NULL;
-    }
-    d->draw=draft_draw_texture;
-    d->clear=draft_texture_clear_entry;
-    d->parent=NULL;
-    d->align=align;
-    d->tex=SDL_CreateTextureFromSurface(renderer,surface);
+    SDL_Texture *tex=SDL_CreateTextureFromSurface(renderer,surface);
     SDL_DestroySurface(surface);
-    if(d->tex==NULL){
-        free(d);
+    if(tex==NULL){
         return NULL;
     }
 
-    if(!SDL_GetTextureSize(d->tex,&d->width,&d->height)){
-        SDL_DestroyTexture(d->tex);
+    draft_texture_t *d=calloc(1,sizeof(*d));
+    if(d==NULL){
+        SDL_DestroyTexture(tex);
+        return NULL;
+    }
+    d->draw=draft_draw_texture;
+    d->clear=draft_texture_clear;
+    d->parent=NULL;
+    d->align=align;
+    d->tex=tex;
+    d->owns_texture=1;   /* 图片路径创建的纹理由 draft 释放 */
+
+    if(!SDL_GetTextureSize(tex,&d->width,&d->height)){
+        SDL_DestroyTexture(tex);
         free(d);
         return NULL;
     }
@@ -1184,7 +1463,7 @@ draft_texture_t *draft_create_picture_from_memory(align_t align,const char *file
         return NULL;
     }
     SDL_Surface *surface=SDL_LoadSurface_IO(io,true);
-    return draft_create_texture(align,surface);
+    return draft_create_texture_from_surface(align,surface);
 }
 
 draft_texture_t *draft_create_picture(align_t align,const char *path){
@@ -1192,7 +1471,318 @@ draft_texture_t *draft_create_picture(align_t align,const char *path){
         return NULL;
     }
     SDL_Surface *surface=SDL_LoadSurface(path);
-    return draft_create_texture(align,surface);
+    return draft_create_texture_from_surface(align,surface);
+}
+
+/* ---- 图标 + 文字 ---- */
+
+typedef struct {
+    int is_icon;
+    SDL_Surface *surface;   /* 文字段；图标段为 NULL，由本函数释放 */
+    SDL_Texture *icon;      /* 图标段；借用主题纹理，不释放 */
+    int width;
+    int height;
+}icon_text_part_t;
+
+typedef darray_t(icon_text_part_t) icon_text_parts_t;
+
+static int icon_text_name_start(char c){
+    return (c>='A'&&c<='Z')||(c>='a'&&c<='z')||c=='_';
+}
+
+static int icon_text_name_char(char c){
+    return icon_text_name_start(c)||(c>='0'&&c<='9');
+}
+
+/* 文字段按单行处理：换行符替换成空格，绝不调用 Wrapped 版本 */
+static SDL_Surface *icon_text_render_segment(TTF_Font *font,const char *text,size_t length,SDL_Color color){
+    if(length==0){
+        return NULL;
+    }
+
+    char *copy=malloc(length+1);
+    if(copy==NULL){
+        return NULL;
+    }
+    for(size_t i=0;i<length;i++){
+        char c=text[i];
+        copy[i]=(c=='\n'||c=='\r')?' ':c;
+    }
+    copy[length]='\0';
+
+    SDL_Surface *surface=TTF_RenderText_Blended(font,copy,length,color);
+    free(copy);
+    return surface;
+}
+
+static int icon_text_add_segment(icon_text_parts_t *parts,TTF_Font *font,const char *text,size_t length,SDL_Color color){
+    SDL_Surface *surface=icon_text_render_segment(font,text,length,color);
+    if(surface==NULL){
+        return 0;
+    }
+
+    icon_text_part_t part={
+        .is_icon=0,
+        .surface=surface,
+        .icon=NULL,
+        .width=surface->w,
+        .height=surface->h
+    };
+    if(da_add(sizeof(part),parts,&part)!=0){
+        SDL_DestroySurface(surface);
+        return 0;
+    }
+    return 1;
+}
+
+static int icon_text_add_icon(icon_text_parts_t *parts,SDL_Texture *icon,int icon_height){
+    if(icon==NULL){
+        return 1;   /* 没有可用图标时跳过这个占位符 */
+    }
+
+    float texture_w=0.0f;
+    float texture_h=0.0f;
+    if(!SDL_GetTextureSize(icon,&texture_w,&texture_h)||texture_w<=0.0f||texture_h<=0.0f){
+        return 1;
+    }
+
+    int height=icon_height;
+    int width=(int)SDL_roundf(texture_w*(float)height/texture_h);
+    if(width<1){
+        width=1;
+    }
+
+    icon_text_part_t part={
+        .is_icon=1,
+        .surface=NULL,
+        .icon=icon,
+        .width=width,
+        .height=height
+    };
+    return da_add(sizeof(part),parts,&part)==0?1:0;
+}
+
+static void icon_text_free_parts(icon_text_parts_t *parts){
+    for(size_t i=0;i<parts->size;i++){
+        if(parts->arr[i].surface!=NULL){
+            SDL_DestroySurface(parts->arr[i].surface);
+        }
+    }
+    da_clear(parts);
+}
+
+/* 把 context 拆成文字段和图标段。
+ * - \字母/下划线 开头：取最长的 [A-Za-z0-9_]* 作为 name，换成图标
+ * - \\：输出一个反斜杠
+ * - 末尾单独的 \：忽略
+ * - 其他 \x：保留反斜杠，继续当普通文字处理
+ * 文字段内部如果有换行符，渲染时替换为空格，保证单行。 */
+draft_texture_t *draft_create_icon_with_text(align_t align,TTF_Font *font,char *context,float wl,float hl,unsigned color){
+    if(font==NULL||context==NULL||context[0]=='\0'||renderer==NULL){
+        return NULL;
+    }
+
+    int line_height=TTF_GetFontHeight(font);
+    if(line_height<=0){
+        return NULL;
+    }
+
+    SDL_Color text_color=draft_color(color);
+    float scale=sdlgui_get_scale();
+
+    /* 图标高度取 hl（逻辑坐标）；hl<=0 时退回字体行高 */
+    int icon_height=line_height;
+    if(hl>0.0f){
+        icon_height=(int)SDL_roundf(hl*scale);
+        if(icon_height<1){
+            icon_height=1;
+        }
+    }
+
+    icon_text_parts_t parts;
+    da_init(&parts);
+    int has_icon=0;
+
+    const char *p=context;
+    const char *literal=p;
+    while(*p!='\0'){
+        if(*p!='\\'){
+            p++;
+            continue;
+        }
+
+        /* 先把反斜杠之前的文字冲出来 */
+        if(p>literal){
+            if(!icon_text_add_segment(&parts,font,literal,(size_t)(p-literal),text_color)){
+                icon_text_free_parts(&parts);
+                return NULL;
+            }
+        }
+
+        if(p[1]=='\0'){
+            /* 末尾单独的反斜杠：跳过 */
+            p++;
+            literal=p;
+            break;
+        }
+
+        if(p[1]=='\\'){
+            /* 转义反斜杠：只保留一个 */
+            if(!icon_text_add_segment(&parts,font,p,1,text_color)){
+                icon_text_free_parts(&parts);
+                return NULL;
+            }
+            p+=2;
+            literal=p;
+            continue;
+        }
+
+        if(icon_text_name_start(p[1])){
+            const char *name=p+1;
+            const char *end=name+1;
+            while(icon_text_name_char(*end)){
+                end++;
+            }
+            size_t length=(size_t)(end-name);
+
+            char small[64];
+            char *copy=(length<sizeof(small))?small:malloc(length+1);
+            if(copy==NULL){
+                icon_text_free_parts(&parts);
+                return NULL;
+            }
+            memcpy(copy,name,length);
+            copy[length]='\0';
+
+            theme_icon_t icon_index=find_icon(copy);
+            if(copy!=small){
+                free(copy);
+            }
+
+            size_t before=parts.size;
+            if(!icon_text_add_icon(&parts,get_icon(icon_index),icon_height)){
+                icon_text_free_parts(&parts);
+                return NULL;
+            }
+            if(parts.size>before){
+                has_icon=1;
+            }
+
+            p=end;
+            literal=p;
+            continue;
+        }
+
+        /* 其他 \x：保留反斜杠，继续按普通文字扫描 */
+        p++;
+    }
+
+    if(p>literal){
+        if(!icon_text_add_segment(&parts,font,literal,(size_t)(p-literal),text_color)){
+            icon_text_free_parts(&parts);
+            return NULL;
+        }
+    }
+
+    if(parts.size==0){
+        icon_text_free_parts(&parts);
+        return NULL;
+    }
+
+    float natural_width=0.0f;
+    for(size_t i=0;i<parts.size;i++){
+        natural_width+=(float)parts.arr[i].width;
+    }
+    if(natural_width<1.0f){
+        icon_text_free_parts(&parts);
+        return NULL;
+    }
+
+    int target_width=(int)SDL_ceilf(natural_width);
+    int target_height=line_height;
+    if(has_icon&&icon_height>target_height){
+        target_height=icon_height;
+    }
+
+    /* wl 仍然限制宽度；不换行，超过时裁剪 */
+    if(wl>0.0f){
+        float limit=wl*scale;
+        if(limit<1.0f){
+            limit=1.0f;
+        }
+        if((float)target_width>limit){
+            target_width=(int)SDL_ceilf(limit);
+        }
+    }
+    if(target_width<1||target_height<1){
+        icon_text_free_parts(&parts);
+        return NULL;
+    }
+
+    SDL_Texture *canvas=SDL_CreateTexture(renderer,SDL_PIXELFORMAT_RGBA32,
+                                          SDL_TEXTUREACCESS_TARGET,target_width,target_height);
+    if(canvas==NULL){
+        icon_text_free_parts(&parts);
+        return NULL;
+    }
+    SDL_SetTextureBlendMode(canvas,SDL_BLENDMODE_BLEND);
+    SDL_SetTextureScaleMode(canvas,SDL_SCALEMODE_NEAREST);
+
+    SDL_Texture *previous=SDL_GetRenderTarget(renderer);
+    if(!SDL_SetRenderTarget(renderer,canvas)){
+        SDL_DestroyTexture(canvas);
+        icon_text_free_parts(&parts);
+        return NULL;
+    }
+
+    SDL_SetRenderDrawColor(renderer,0,0,0,0);
+    SDL_RenderClear(renderer);
+
+    float x=0.0f;
+    for(size_t i=0;i<parts.size;i++){
+        icon_text_part_t *part=&parts.arr[i];
+        if(part->is_icon){
+            SDL_FRect dst={
+                .x=x,
+                .y=((float)target_height-(float)part->height)*0.5f,
+                .w=(float)part->width,
+                .h=(float)part->height
+            };
+            SDL_RenderTexture(renderer,part->icon,NULL,&dst);
+        }else if(part->surface!=NULL){
+            SDL_Texture *tex=SDL_CreateTextureFromSurface(renderer,part->surface);
+            if(tex!=NULL){
+                SDL_SetTextureBlendMode(tex,SDL_BLENDMODE_BLEND);
+                SDL_FRect dst={
+                    .x=x,
+                    .y=((float)target_height-(float)part->surface->h)*0.5f,
+                    .w=(float)part->surface->w,
+                    .h=(float)part->surface->h
+                };
+                SDL_RenderTexture(renderer,tex,NULL,&dst);
+                SDL_DestroyTexture(tex);
+            }
+        }
+        x+=(float)part->width;
+    }
+
+    SDL_SetRenderTarget(renderer,previous);
+    icon_text_free_parts(&parts);
+
+    draft_texture_t *d=calloc(1,sizeof(*d));
+    if(d==NULL){
+        SDL_DestroyTexture(canvas);
+        return NULL;
+    }
+    d->draw=draft_draw_texture;
+    d->clear=draft_texture_clear;
+    d->parent=NULL;
+    d->align=align;
+    d->tex=canvas;
+    d->owns_texture=1;
+    d->width=(float)target_width/scale;
+    d->height=(float)target_height/scale;
+    return d;
 }
 
 void draft_draw_texture(void *p){

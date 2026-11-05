@@ -12,8 +12,14 @@ typedef struct SDL_Texture SDL_Texture;
 typedef struct SDL_Window SDL_Window;
 #endif
 
+/* 主题搜索路径的兜底值。运行时还会自动加入可执行文件/应用包里的 assets 目录、
+ * 以及当前平台的用户/系统主题目录；设置 SDLGUI_THEME_PATH 环境变量会完全覆盖。 */
 #ifndef SDLGUI_THEME_PATH
-#define SDLGUI_THEME_PATH "/usr/share/sdlgui:~/.local/share/sdlgui"
+#if defined(__APPLE__)
+#define SDLGUI_THEME_PATH "~/Library/Application Support/sdlgui:/Library/Application Support/sdlgui:/opt/homebrew/share/sdlgui:/usr/local/share/sdlgui"
+#else
+#define SDLGUI_THEME_PATH "/usr/share/sdlgui:~/.local/share/sdlgui:~/.config/sdlgui"
+#endif
 #endif
 
 typedef struct layout_t layout_t;   /* get_root() 等在定义之前就要用到 */
@@ -57,6 +63,10 @@ layout_t *get_root_layout(void);   /* 可修改的 root，用于挂接顶层布�
 float get_root_w(void);
 float get_root_h(void);
 
+/* 逻辑坐标（窗口点）到物理像素的比例：普通屏幕为 1.0，Retina 为 2.0。
+ * 布局和绘制都用逻辑坐标，字体在内部按这个比例栅格化，保证高分屏清晰。 */
+float sdlgui_get_scale(void);
+
 
 typedef struct {
     unsigned horizon:2;  // 0:不在水平上对齐 1:向左对齐 2:向右对齐 3:水平对齐中央
@@ -96,13 +106,13 @@ typedef struct sublayout_t {
     float width;         \
     float height;
 
-typedef struct layout_t{
+struct layout_t{
     SUBLAYOUT_DEF
 
-    int enable:1; // 是否启用，禁用时，不更新此布局
-    int active:1; // 是否活跃，活跃时更新鼠标事件
-    int son_resizable:1; // sons是否可以被realloc
-    int need_free:1; // 是否需要free释放
+    unsigned enable:1; // 是否启用，禁用时，不更新此布局
+    unsigned active:1; // 是否活跃，活跃时更新鼠标事件
+    unsigned son_resizable:1; // sons是否可以被realloc
+    unsigned need_free:1; // 是否需要free释放
 
     layout_t **sons;  // 依赖此布局的子布局
     size_t son_size;
@@ -111,7 +121,7 @@ typedef struct layout_t{
     update_func update;
     clear_func clear;
     mouse_func mouse;
-}layout_t;
+};
 
 /* parent==NULL 时创建不挂接的孤儿布局；使用前需要 layout_attach()。
  * update/mouse 只处理该布局自身；子布局的遍历由 update_sons()/layout_mouse()
@@ -187,8 +197,8 @@ typedef struct {
     clear_func clear;
     SUBLAYOUT_DEF
 
-    int can_enter:1; // 允许多行显示
-    int can_change:1; // 显示内容可以发生变化
+    unsigned can_enter:1; // 允许多行显示
+    unsigned can_change:1; // 显示内容可以发生变化
 
     TTF_Font *font;    // 行高由 TTF_GetFontHeight(font) 在绘制时读取
     char *context;    // 借用调用方的字符串，create 不复制也不负责释放
@@ -209,7 +219,7 @@ typedef struct {
  * 更新为最终渲染尺寸。can_change=0 时 create 会预先测量并建立缓存。 */
 draft_text_t *draft_create_text(align_t align,TTF_Font *font,char *context,float wl,float hl,unsigned color);
 void draft_draw_text(void *l);
-void draft_text_clear(draft_text_t *l);   // 释放 can_change=0 的缓存纹理
+void draft_text_clear(void *l);   // 释放 can_change=0 的缓存纹理
 
 typedef struct {
     draw_func draw;
@@ -217,17 +227,25 @@ typedef struct {
     SUBLAYOUT_DEF
 
     SDL_Texture *tex;
+    unsigned owns_texture:1;   /* clear 时是否销毁 tex；用户传入的纹理由用户释放 */
 }draft_texture_t;
 
+/* 用用户已有的纹理创建 draft；draft 不接管所有权，clear 时不会销毁 tex。 */
+draft_texture_t *draft_create_texture(align_t align,SDL_Texture *tex);
+/* 图片版本自己创建纹理，clear 时自动销毁。 */
 draft_texture_t *draft_create_picture_from_memory(align_t align,const char *file,size_t size);
 draft_texture_t *draft_create_picture(align_t align,const char *path);
+/* 图标 + 文字合成：context 里的 \name 替换为对应图标，\\ 输出一个反斜杠，
+ * 末尾单独的 \ 被忽略。文字不换行，wl>0 时按逻辑宽度裁剪；
+ * hl>0 时图标高度取 hl（逻辑坐标）、宽度等比缩放，hl<=0 时用字体行高。 */
+draft_texture_t *draft_create_icon_with_text(align_t align,TTF_Font *font,char *context,float wl,float hl,unsigned color);
 void draft_draw_texture(void *l);
-void draft_texture_clear(draft_texture_t *l);   // 释放贴图
+void draft_texture_clear(void *l);   // 只释放由图片创建的贴图，用户传入的纹理不动
 
 typedef struct {
     layout_t l;
 
-    int draft_resizable:1;
+    unsigned draft_resizable:1;
     draft_t **drafts;
     size_t draft_size;
 
@@ -301,7 +319,7 @@ typedef enum {
 typedef void(*button_callback_func)(int status,void *data);
 typedef struct {
     layout_t l;
-    int sublayout_resizable:1;
+    unsigned sublayout_resizable:1;
     unsigned left_last_state:1; // 鼠标左键上次状态
     unsigned pressed_inside:1;  // 本次按下是否落在判定框内
     unsigned need_bounce:2;     // 是否等到鼠标回弹再触发 0:否 1:无论回弹时在哪，回弹即触发 2:只有在子布局内回弹才触发

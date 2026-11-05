@@ -3,9 +3,10 @@
 
 用法：python3 tools/make_icon.py
 
-输出两个文件：
-  assets/icon.png     256x256  原始尺寸，供打包 .desktop / hicolor 图标用
-  assets/icon-64.png   64x64   给 SDL_SetWindowIcon 用
+输出三个文件：
+  assets/icon.png       256x256  原始尺寸，供打包 .desktop / hicolor 图标用
+  assets/icon-64.png     64x64   给 SDL_SetWindowIcon 用
+  assets/icon-1024.png  1024x1024 给 macOS 的 .icns 用
 
 窗口图标为什么单独出一份 64x64：X11 设置窗口图标靠 XChangeProperty 写
 _NET_WM_ICON，一次请求有大小上限，256x256 的图标数据超限后会被静默丢弃
@@ -18,8 +19,9 @@ from PIL import Image, ImageDraw
 
 ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "assets")
 
-MASTER = 256        # 原始尺寸
+MASTER = 1024       # 用于 macOS .icns 的高分辨率母版
 WINDOW = 64         # 窗口图标尺寸
+LINUX = 256         # Linux/桌面图标尺寸
 SS = 4              # 超采样倍数
 S = MASTER * SS
 
@@ -51,7 +53,7 @@ def main():
         d.ellipse([x - pr, cy - pr, x + pr, cy + pr], fill=PELLET)
 
     os.makedirs(ASSETS, exist_ok=True)
-    for size, name in ((MASTER, "icon.png"), (WINDOW, "icon-64.png")):
+    for size, name in ((LINUX, "icon.png"), (WINDOW, "icon-64.png"), (MASTER, "icon-1024.png")):
         out = os.path.join(ASSETS, name)
         img.resize((size, size), Image.LANCZOS).save(out)
         print("已生成", os.path.normpath(out), f"{size}x{size}")

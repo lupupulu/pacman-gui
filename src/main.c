@@ -62,6 +62,9 @@ int main(int argc,char *argv[]){
     (void)argc;
     (void)argv;
 
+    /* 应用名/版本/标识符；macOS 的菜单栏和包信息会用到 */
+    SDL_SetAppMetadata(WINDOW_TITLE,"0.0.1","io.github.lupupulu.pacman-gui");
+
     sdlgui_init(WINDOW_TITLE,WINDOW_W,WINDOW_H,"assets/icon-64.png","Default");
 
     widget_button_t *button=widget_create_button(
@@ -82,7 +85,8 @@ int main(int argc,char *argv[]){
             }else if(ev.type==SDL_EVENT_KEY_DOWN&&ev.key.key==SDLK_ESCAPE){
                 running=FALSE;
             }else if(ev.type==SDL_EVENT_WINDOW_RESIZED
-                  || ev.type==SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED){
+                  || ev.type==SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED
+                  || ev.type==SDL_EVENT_WINDOW_DISPLAY_CHANGED){
                 update_root();
             }else if(ev.type==SDL_EVENT_SYSTEM_THEME_CHANGED){
                 theme_select_system();

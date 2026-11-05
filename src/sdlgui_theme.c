@@ -1,11 +1,13 @@
 #include <SDL3/SDL.h>
 #include <SDL3_ttf/SDL_ttf.h>
-#include <fontconfig/fontconfig.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 #include <math.h>
+#include "sdlgui.h"
 #include "sdlgui_theme.h"
 #include "sdlgui_i18n.h"
+#include "sdlgui_fontlookup.h"
 #include "CDS/darray.h"
 #include "CDS/confc.h"
 
@@ -61,11 +63,35 @@ static theme_t theme={
     .slice_size=2
 };
 
+/* 内置 lost 图标：由 tools/gen_lost_icon.py 生成到 build/lost_icon.c。
+ * 64x64 RGBA，白色问号 + 透明背景，绘制时按主题文字色着色。 */
+extern const unsigned char pacman_lost_icon[];
+extern const size_t pacman_lost_icon_len;
+extern const int pacman_lost_icon_w;
+extern const int pacman_lost_icon_h;
+
+typedef struct {
+    char *name;          /* 规则名；icon_rules 按 name 升序排列 */
+    theme_icon_t index;
+}icon_pair_t;
+
+static const icon_pair_t icon_default_rules[]={
+    {.name="lost",.index=ICON_LOST}
+};
+
+static darray_t(icon_pair_t) icon_rules;
+static size_t icon_index_max=0;       /* 下一个可分配的图标下标 */
+static SDL_Texture *builtin_lost_texture=NULL;
+
 static toml_t theme_toml;
 
 
 static void theme_free_loaded(void);   /* 定义在 theme_set 前面 */
 static void release_font_cache(void);
+static void release_icon_rules(void);
+static void theme_load_icons(void);
+static int theme_ensure_icon_slots(void);
+static int theme_create_builtin_lost(void);
 
 /* 复制字符串；源为 NULL 时返回 NULL */
 static char *theme_dup_string(const char *s){
@@ -80,7 +106,81 @@ static char *theme_dup_string(const char *s){
     return copy;
 }
 
-/* 按指定字号打开内嵌字体，失败返回 NULL */
+/* 拼目录和文件名；dir 末尾的 '/' 不会重复 */
+static char *theme_join_path(const char *dir,const char *name){
+    if(dir==NULL||dir[0]=='\0'){
+        return theme_dup_string(name);
+    }
+    if(name==NULL||name[0]=='\0'){
+        return theme_dup_string(dir);
+    }
+
+    size_t dir_size=strlen(dir);
+    size_t name_size=strlen(name);
+    int slash=dir[dir_size-1]!='/';
+    char *path=malloc(dir_size+(size_t)slash+name_size+1);
+    if(path==NULL){
+        return NULL;
+    }
+    memcpy(path,dir,dir_size);
+    size_t pos=dir_size;
+    if(slash){
+        path[pos++]='/';
+    }
+    memcpy(path+pos,name,name_size+1);
+    return path;
+}
+
+/* 取路径的目录部分；没有 '/' 时返回 "." */
+static char *theme_dirname(const char *path){
+    if(path==NULL||path[0]=='\0'){
+        return theme_dup_string(".");
+    }
+    const char *slash=strrchr(path,'/');
+    if(slash==NULL){
+        return theme_dup_string(".");
+    }
+    if(slash==path){
+        return theme_dup_string("/");
+    }
+    size_t size=(size_t)(slash-path);
+    char *dir=malloc(size+1);
+    if(dir!=NULL){
+        memcpy(dir,path,size);
+        dir[size]='\0';
+    }
+    return dir;
+}
+
+/* 图标名补 .png 后缀；已经带 .png（大小写不敏感）就不重复添加 */
+static int theme_ends_with_png(const char *name){
+    size_t size=strlen(name);
+    if(size<4){
+        return 0;
+    }
+    return name[size-4]=='.' &&
+           (name[size-3]=='p'||name[size-3]=='P') &&
+           (name[size-2]=='n'||name[size-2]=='N') &&
+           (name[size-1]=='g'||name[size-1]=='G');
+}
+
+static char *theme_icon_filename(const char *name){
+    if(name==NULL||name[0]=='\0'){
+        return NULL;
+    }
+    if(theme_ends_with_png(name)){
+        return theme_dup_string(name);
+    }
+    size_t size=strlen(name);
+    char *filename=malloc(size+sizeof(".png"));
+    if(filename!=NULL){
+        memcpy(filename,name,size);
+        memcpy(filename+size,".png",sizeof(".png"));
+    }
+    return filename;
+}
+
+/* 按指定像素尺寸打开内嵌字体，失败返回 NULL */
 static TTF_Font *create_embedded_font(float ptsize){
     if(!TTF_WasInit()){
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("create_embedded_font: TTF is not initialized"));
@@ -138,6 +238,37 @@ static void theme_reset_builtin(void){
     theme.rect_round_corner=10.0f;
     theme.slices=builtin_theme_slice;
     theme.slice_size=2;
+    theme.icon_path=NULL;
+    theme.icons=NULL;
+    theme.icon_size=0;
+}
+
+/* 统一的主题初始化：字体 + icon_default_rules。
+ * 调用前 renderer 必须已经创建；icon_rules 会先清空再按默认规则建立。 */
+int theme_init(void){
+    theme_free_loaded();
+    theme_reset_builtin();
+    release_icon_rules();
+    icon_index_max=0;
+
+    for(size_t i=0;i<sizeof(icon_default_rules)/sizeof(icon_default_rules[0]);i++){
+        if(add_icon_rule(icon_default_rules[i].name,(long)icon_default_rules[i].index)<0){
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                         _("theme_init: failed to add default icon rule %s"),
+                         icon_default_rules[i].name);
+            return 0;
+        }
+    }
+
+    if(!theme_load_default_font()){
+        return 0;
+    }
+
+    if(!theme_create_builtin_lost()){
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    _("theme_init: built-in lost icon is unavailable"));
+    }
+    return 1;
 }
 
 /* 释放主题里 malloc 出来的数组。
@@ -159,6 +290,19 @@ static void theme_free_arrays(theme_t *th){
         free(th->fonts);
         th->fonts=NULL;
     }
+    if(th->icons!=NULL){
+        for(size_t i=0;i<th->icon_size;i++){
+            if(th->icons[i]!=NULL){
+                SDL_DestroyTexture(th->icons[i]);
+            }
+        }
+        free(th->icons);
+        th->icons=NULL;
+    }
+    free(th->icon_path);
+    th->icon_path=NULL;
+    th->icon_size=0;
+
     free(th->text);
     th->text=NULL;
     th->slice_size=0;
@@ -303,10 +447,17 @@ void theme_set(const char *path,const char *file){
         return ;
     }
 
+    /* 配置目录用于解析默认 icon_path（<配置目录>/icon） */
+    char *config_dir=theme_dirname(f);
     toml_t t=toml_load(f);
     free(f);
+    if(config_dir==NULL){
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("theme_set: failed to allocate config directory"));
+        return ;
+    }
     if(t.size==0){
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("theme_set: failed to parse %s"),file);
+        free(config_dir);
         return ;
     }
 
@@ -351,7 +502,33 @@ void theme_set(const char *path,const char *file){
     }
     tmp.name=((toml_string_t *)tp)->str;
 
-    /* 3. 字号：没写就沿用内建的三级字号 */
+    /* 3. 图标目录：没写时使用 <config.toml 所在目录>/icon */
+    char *icon_path=NULL;
+    tp=toml_lookup(&t,"",0,"icon_path");
+    if(tp!=NULL){
+        if(*tp!=TOML_STRING||((toml_string_t *)tp)->str[0]=='\0'){
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                         _("theme_set: icon_path must be a non-empty string"));
+            goto fail;
+        }
+        const char *value=((toml_string_t *)tp)->str;
+        if(value[0]=='/'){
+            icon_path=theme_dup_string(value);
+        }else{
+            icon_path=theme_join_path(config_dir,value);
+        }
+    }else{
+        icon_path=theme_join_path(config_dir,"icon");
+    }
+    free(config_dir);
+    config_dir=NULL;
+    if(icon_path==NULL){
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("theme_set: failed to allocate icon path"));
+        goto fail;
+    }
+    tmp.icon_path=icon_path;
+
+    /* 4. 字号：没写就沿用内建的三级字号 */
     tp=toml_lookup(&t,"",0,"text_size");
     if(tp!=NULL){
         tmp.text=theme_read_text_sizes(tp,&tmp.text_size);
@@ -368,7 +545,7 @@ void theme_set(const char *path,const char *file){
         tmp.text_size=sizeof(builtin_text_size)/sizeof(builtin_text_size[0]);
     }
 
-    /* 4. 字体族：写了就记下族名并通过 obtain_font 获取；没写就沿用当前字体 */
+    /* 5. 字体族：写了就记下族名并通过 obtain_font 获取；没写就沿用当前字体 */
     tp=toml_lookup(&t,"",0,"fonts");
     if(tp!=NULL){
         if(*tp!=TOML_ARRAY){
@@ -430,7 +607,7 @@ void theme_set(const char *path,const char *file){
         }
     }
 
-    /* 5. 尺寸参数 */
+    /* 6. 尺寸参数 */
     tp=toml_lookup(&t,"",0,"item_height");
     if(tp!=NULL){
         double v=0.0;
@@ -471,7 +648,7 @@ void theme_set(const char *path,const char *file){
         tmp.rect_round_corner=(float)v;
     }
 
-    /* 6. 根下每个非空名字的表都是一套配色切片 */
+    /* 7. 根下每个非空名字的表都是一套配色切片 */
     size_t slice_count=0;
     for(size_t i=0;i<t.size;i++){
         toml_pair_t *pair=&t.pairs[i];
@@ -521,14 +698,14 @@ void theme_set(const char *path,const char *file){
         }
 
         /* 未配置时回退到调色板的次要色 */
-        slice->divider_color=(slice->color_size>COLOR_SECONDARY)?slice->color[COLOR_SECONDARY]:0x7F7F7FFF;
+        slice->divider_color=(slice->color_size>(size_t)COLOR_SECONDARY)?slice->color[COLOR_SECONDARY]:0x7F7F7FFF;
         tp=toml_lookup_from_table((toml_table_t *)pair->value,"divider_color");
         if(tp!=NULL&&!theme_read_color(tp,slice->name,"divider_color",&slice->divider_color)){
             goto fail;
         }
     }
 
-    /* 7. default 必须指向已经读进来的某套切片；没写就用第一套 */
+    /* 8. default 必须指向已经读进来的某套切片；没写就用第一套 */
     tmp.now_slice=&tmp.slices[0];
     tp=toml_lookup(&t,"",0,"default");
     if(tp!=NULL){
@@ -552,6 +729,15 @@ void theme_set(const char *path,const char *file){
         }
     }
 
+    /* 给每个图标下标预留纹理槽，theme_load_icons() 再按规则逐个加载 */
+    size_t icon_count=icon_index_max>0?icon_index_max:1;
+    tmp.icons=calloc(icon_count,sizeof(*tmp.icons));
+    if(tmp.icons==NULL){
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("theme_set: failed to allocate icon slots"));
+        goto fail;
+    }
+    tmp.icon_size=icon_count;
+
     /* 到这里 tmp 已经完整且有效，才释放旧配置并覆盖：
        旧数组先回收，再卸掉旧 TOML（tmp 里的字符串属于新 TOML，最后才接管）。
        字体本身归缓存所有，不在这里关闭。 */
@@ -559,6 +745,7 @@ void theme_set(const char *path,const char *file){
     toml_unload(&theme_toml);
     theme_toml=t;
     theme=tmp;
+    theme_load_icons();
 
     /* 主题已经加载成功，这时才按环境 locale 启用 gettext */
     sdlgui_i18n_init();
@@ -570,6 +757,8 @@ void theme_set(const char *path,const char *file){
     return ;
 
 fail:
+    free(config_dir);
+    config_dir=NULL;
     theme_free_arrays(&tmp);
     toml_unload(&t);
     SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
@@ -602,22 +791,65 @@ int theme_select_system(void){
     return 0;
 }
 
-unsigned get_color(size_t n){
-    theme_slice_t *now=theme.now_slice;
-    return now->color[n>=now->color_size?now->color_size-1:n];
+/* 主题数组可能比枚举短（旧配置只写了一个 text_color），越界时回退到最后一项 */
+static inline size_t theme_index(size_t index,size_t count){
+    if(count==0){
+        return 0;
+    }
+    return index<count?index:count-1;
 }
-unsigned get_text_color(size_t n){
+
+unsigned get_color(theme_color_t index){
     theme_slice_t *now=theme.now_slice;
-    return now->text_color[n>=now->text_color_size?now->text_color_size-1:n];
+    return now->color[theme_index((size_t)index,now->color_size)];
+}
+unsigned get_text_color(theme_text_t index){
+    theme_slice_t *now=theme.now_slice;
+    return now->text_color[theme_index((size_t)index,now->text_color_size)];
 }
 unsigned get_divider_color(void){
     return theme.now_slice->divider_color;
 }
-const char *get_font(size_t n){
-    return theme.fonts[n>=theme.font_size?theme.font_size-1:n];
+const char *get_font(theme_text_t index){
+    return theme.fonts[theme_index((size_t)index,theme.font_size)];
 }
-float get_text_size(size_t n){
-    return theme.text[n>=theme.text_size?theme.text_size-1:n];
+float get_text_size(theme_text_t index){
+    return theme.text[theme_index((size_t)index,theme.text_size)];
+}
+
+/* lost 图标是占位图，统一乘上当前文字色，深色/浅色主题都能看清。
+ * 主题自带的 lost.png 也走这里；其他图标保持原色。 */
+static void theme_tint_lost(SDL_Texture *texture){
+    if(texture==NULL){
+        return;
+    }
+    unsigned color=get_text_color(TEXT_CONTEXT);
+    SDL_SetTextureColorMod(texture,
+                           (Uint8)((color>>24)&0xFF),
+                           (Uint8)((color>>16)&0xFF),
+                           (Uint8)((color>>8)&0xFF));
+    SDL_SetTextureAlphaMod(texture,(Uint8)(color&0xFF));
+}
+
+SDL_Texture *get_icon(theme_icon_t index){
+    size_t slot=(size_t)index;
+    if(theme.name!=NULL&&theme.icons!=NULL&&slot<theme.icon_size&&theme.icons[slot]!=NULL){
+        if(index==ICON_LOST){
+            theme_tint_lost(theme.icons[slot]);
+        }
+        return theme.icons[slot];
+    }
+
+    /* 外部主题可能自己带了 lost.png，缺失的图标先回退到它 */
+    if(theme.name!=NULL&&theme.icons!=NULL&&(size_t)ICON_LOST<theme.icon_size&&
+       theme.icons[ICON_LOST]!=NULL){
+        theme_tint_lost(theme.icons[ICON_LOST]);
+        return theme.icons[ICON_LOST];
+    }
+
+    /* 内置主题，或外部主题缺少该图标：回退到编译期内嵌的问号 */
+    theme_tint_lost(builtin_lost_texture);
+    return builtin_lost_texture;
 }
 
 const theme_t *get_theme(void){
@@ -630,6 +862,11 @@ const theme_slice_t *get_theme_slice(void){
 
 void theme_quit(void){
     theme_free_loaded();
+    release_icon_rules();
+    if(builtin_lost_texture!=NULL){
+        SDL_DestroyTexture(builtin_lost_texture);
+        builtin_lost_texture=NULL;
+    }
     toml_unload(&theme_toml);
     release_font_cache();
 }
@@ -660,12 +897,13 @@ static TTF_Font *open_font_file(const char *name,const char *path,int index,floa
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("create_font: failed to open font %s (index %d): %s"),path,index,SDL_GetError());
     }else{
         TTF_SetFontHinting(font,TTF_HINTING_MONO);
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,_("create_font: %s -> %s (index %d, %.0f pt)"),name,path,index,ptsize);
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,_("create_font: %s -> %s (index %d, %.0f px)"),name,path,index,ptsize);
     }
     return font;
 }
 
-/* 通过 fontconfig 解析字体名，返回新字体以及解析出的路径/index（路径由调用方释放） */
+/* 通过平台字体后端解析字体名，返回新字体以及解析出的路径/index（路径由调用方释放）。
+ * ptsize 是物理像素尺寸（调用方已经乘过 UI 缩放）。 */
 static TTF_Font *create_font(const char *name,float ptsize,char **path_out,int *index_out){
     if(path_out!=NULL){
         *path_out=NULL;
@@ -682,38 +920,11 @@ static TTF_Font *create_font(const char *name,float ptsize,char **path_out,int *
         return NULL;
     }
 
-    /* 把 "字体族[:style=...]" 解析成 fontconfig 模式，再匹配到具体字体文件 */
-    FcPattern *pattern=FcNameParse((const FcChar8 *)name);
-    if(pattern==NULL){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("create_font: failed to parse font pattern %s"),name);
-        return NULL;
-    }
-    FcConfigSubstitute(NULL,pattern,FcMatchPattern);
-    FcDefaultSubstitute(pattern);
-
-    FcResult result=FcResultMatch;
-    FcPattern *match=FcFontMatch(NULL,pattern,&result);
-    FcPatternDestroy(pattern);
-    if(match==NULL){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("create_font: fontconfig could not find font %s (result %d)"),name,(int)result);
-        return NULL;
-    }
-
-    FcChar8 *file=NULL;
-    if(FcPatternGetString(match,FC_FILE,0,&file)!=FcResultMatch||file==NULL){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("create_font: match for font %s has no file path"),name);
-        FcPatternDestroy(match);
-        return NULL;
-    }
-
-    /* .ttc/.otc 这类集合要带上 face index，否则只会打开第 0 个面 */
+    /* 把 "字体族[:style=...]" 解析成具体字体文件：macOS 走 CoreText，其他平台走 fontconfig */
     int index=0;
-    FcPatternGetInteger(match,FC_INDEX,0,&index);
-
-    char *path=theme_dup_string((const char *)file);
-    FcPatternDestroy(match);
+    char *path=sdlgui_font_lookup(name,&index);
     if(path==NULL){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("create_font: failed to copy font path"));
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("create_font: could not find font %s"),name);
         return NULL;
     }
 
@@ -736,9 +947,9 @@ static TTF_Font *create_font(const char *name,float ptsize,char **path_out,int *
 
 typedef struct {
     char *name;    /* NULL 表示内嵌字体 */
-    float ptsize;
+    float ptsize;  /* 逻辑字号，缓存键 */
 
-    char *path;    /* fontconfig 解析出的字体文件；内嵌/回退字体为 NULL */
+    char *path;    /* 平台字体后端解析出的字体文件；内嵌/回退字体为 NULL */
     int index;     /* .ttc/.otc 的 face index */
     TTF_Font *font;
 }font_pair;
@@ -795,7 +1006,7 @@ static font_pair *font_cache_find(const char *name,float ptsize){
     return NULL;
 }
 
-/* 查找同名且已经记录文件路径的项，用于换字号时跳过 fontconfig */
+/* 查找同名且已经记录文件路径的项，用于换字号时跳过字体查找 */
 static font_pair *font_cache_find_named(const char *name){
     font_pair key={.name=(char *)name,.ptsize=0.0f};
     size_t i=font_cache_lower_bound(&key);
@@ -841,14 +1052,17 @@ TTF_Font *obtain_font(const char *name,float ptsize){
         return hit->font;
     }
 
+    /* 缓存键用逻辑字号；实际栅格化按 Retina 缩放放大 */
+    float pixel_size=ptsize*sdlgui_get_scale();
+
     TTF_Font *font=NULL;
     char *path=NULL;
     int index=0;
 
-    /* 同名不同字号：已有文件路径就直接按路径打开，不再查 fontconfig */
+    /* 同名不同字号：已有文件路径就直接按路径打开，不再查字体后端 */
     font_pair *named=(name!=NULL)?font_cache_find_named(name):NULL;
     if(named!=NULL){
-        font=open_font_file(name,named->path,named->index,ptsize);
+        font=open_font_file(name,named->path,named->index,pixel_size);
         if(font!=NULL){
             path=theme_dup_string(named->path);
             index=named->index;
@@ -860,13 +1074,13 @@ TTF_Font *obtain_font(const char *name,float ptsize){
         }
     }
 
-    /* 没有记录过路径时才走 fontconfig */
+    /* 没有记录过路径时才走字体后端 */
     if(font==NULL&&name!=NULL&&named==NULL){
-        font=create_font(name,ptsize,&path,&index);
+        font=create_font(name,pixel_size,&path,&index);
     }
 
     if(font==NULL){
-        font=create_embedded_font(ptsize);
+        font=create_embedded_font(pixel_size);
         if(font==NULL){
             free(path);
             return NULL;
@@ -903,4 +1117,267 @@ TTF_Font *obtain_font(const char *name,float ptsize){
         return NULL;
     }
     return font;
+}
+
+
+/* ---- 图标 ---- */
+
+static void release_icon_rules(void){
+    for(size_t i=0;i<icon_rules.size;i++){
+        free(icon_rules.arr[i].name);
+    }
+    da_clear(&icon_rules);
+    icon_index_max=0;
+}
+
+/* 内置 lost 图标的 RGBA 数据 -> surface；数据是静态的，surface 不拥有像素 */
+static SDL_Surface *theme_builtin_lost_surface(void){
+    if(pacman_lost_icon_w<=0||pacman_lost_icon_h<=0){
+        return NULL;
+    }
+    size_t expected=(size_t)pacman_lost_icon_w*(size_t)pacman_lost_icon_h*4u;
+    if(pacman_lost_icon_len<expected){
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     _("theme: built-in lost icon has %zu bytes, expected %zu"),
+                     pacman_lost_icon_len,expected);
+        return NULL;
+    }
+    return SDL_CreateSurfaceFrom(pacman_lost_icon_w,pacman_lost_icon_h,
+                                 SDL_PIXELFORMAT_RGBA32,(void *)pacman_lost_icon,
+                                 pacman_lost_icon_w*4);
+}
+
+static SDL_Texture *theme_texture_from_surface(SDL_Surface *surface){
+    if(surface==NULL){
+        return NULL;
+    }
+
+    SDL_Renderer *renderer=get_renderer();
+    if(renderer==NULL){
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("load_icon: renderer is not available"));
+        SDL_DestroySurface(surface);
+        return NULL;
+    }
+
+    SDL_Texture *texture=SDL_CreateTextureFromSurface(renderer,surface);
+    SDL_DestroySurface(surface);
+    if(texture==NULL){
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     _("load_icon: SDL_CreateTextureFromSurface failed: %s"),SDL_GetError());
+        return NULL;
+    }
+    SDL_SetTextureScaleMode(texture,SDL_SCALEMODE_NEAREST);
+    SDL_SetTextureBlendMode(texture,SDL_BLENDMODE_BLEND);
+    return texture;
+}
+
+SDL_Texture *load_icon(const char *path,const char *name){
+    char *filename=theme_icon_filename(name);
+    if(filename==NULL){
+        return NULL;
+    }
+
+    SDL_Surface *surface=NULL;
+    if(path==NULL){
+        /* 内置主题没有图标目录，只有编译期嵌入的 lost */
+        if(SDL_strcasecmp(filename,"lost.png")==0){
+            surface=theme_builtin_lost_surface();
+        }else{
+            SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
+                         _("load_icon: no built-in icon named %s"),filename);
+        }
+        free(filename);
+    }else{
+        char *file=theme_join_path(path,filename);
+        free(filename);
+        if(file!=NULL){
+            surface=SDL_LoadSurface(file);
+            if(surface==NULL){
+                SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
+                             _("load_icon: cannot load %s: %s"),file,SDL_GetError());
+            }
+            free(file);
+        }
+    }
+
+    return theme_texture_from_surface(surface);
+}
+
+static int theme_create_builtin_lost(void){
+    if(builtin_lost_texture!=NULL){
+        return 1;
+    }
+    builtin_lost_texture=load_icon(NULL,"lost");
+    if(builtin_lost_texture==NULL){
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     _("theme_init: failed to create the built-in lost icon"));
+        return 0;
+    }
+    return 1;
+}
+
+/* 主题加载后新增规则时，按需扩大纹理槽数组 */
+static int theme_ensure_icon_slots(void){
+    if(theme.name==NULL){
+        return 1;   /* 内置主题直接用 builtin_lost_texture */
+    }
+    if(icon_index_max<=theme.icon_size){
+        return 1;
+    }
+
+    size_t count=icon_index_max;
+    SDL_Texture **grown=realloc(theme.icons,count*sizeof(*grown));
+    if(grown==NULL){
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("theme: failed to grow icon slots"));
+        return 0;
+    }
+    for(size_t i=theme.icon_size;i<count;i++){
+        grown[i]=NULL;
+    }
+    theme.icons=grown;
+    theme.icon_size=count;
+    return 1;
+}
+
+/* 按规则名加载还没有纹理的槽；同名别名共享同一个 slot */
+static void theme_load_icons(void){
+    if(theme.name==NULL||theme.icon_path==NULL||theme.icons==NULL){
+        return;
+    }
+
+    SDL_PathInfo info;
+    if(!SDL_GetPathInfo(theme.icon_path,&info)||info.type!=SDL_PATHTYPE_DIRECTORY){
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    _("theme: icon directory %s not found; using built-in icons"),
+                    theme.icon_path);
+        return;
+    }
+
+    for(size_t i=0;i<icon_rules.size;i++){
+        size_t slot=(size_t)icon_rules.arr[i].index;
+        if(slot>=theme.icon_size||theme.icons[slot]!=NULL){
+            continue;
+        }
+        theme.icons[slot]=load_icon(theme.icon_path,icon_rules.arr[i].name);
+    }
+}
+
+static size_t icon_rule_lower_bound(const char *name){
+    size_t low=0;
+    size_t high=icon_rules.size;
+    while(low<high){
+        size_t mid=low+(high-low)/2;
+        if(strcmp(icon_rules.arr[mid].name,name)<0){
+            low=mid+1;
+        }else{
+            high=mid;
+        }
+    }
+    return low;
+}
+
+/* 规则名必须能安全地当作标识符/文件名：
+ * 只允许 A-Z a-z 0-9 和 '_'，且首字符不能是数字。 */
+static int icon_rule_name_valid(const char *name){
+    if(name==NULL||name[0]=='\0'){
+        return 0;
+    }
+
+    unsigned char first=(unsigned char)name[0];
+    if(!((first>='A'&&first<='Z')||(first>='a'&&first<='z')||first=='_')){
+        return 0;
+    }
+
+    for(const char *p=name;*p!='\0';p++){
+        unsigned char c=(unsigned char)*p;
+        if(!((c>='A'&&c<='Z')||(c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='_')){
+            return 0;
+        }
+    }
+    return 1;
+}
+
+long add_icon_rule(const char *name,long index){
+    if(!icon_rule_name_valid(name)){
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    _("add_icon_rule: invalid icon name \"%s\""),
+                    name!=NULL?name:"(null)");
+        return -1;
+    }
+
+    size_t pos=icon_rule_lower_bound(name);
+    if(pos<icon_rules.size&&strcmp(icon_rules.arr[pos].name,name)==0){
+        return -1;   /* 同名规则已经存在 */
+    }
+
+    size_t old_max=icon_index_max;
+    long assigned=index;
+    if(assigned<0){
+        if(icon_index_max>=(size_t)LONG_MAX){
+            return -1;
+        }
+        assigned=(long)icon_index_max++;
+    }else if((size_t)assigned>=icon_index_max){
+        icon_index_max=(size_t)assigned+1;
+    }
+
+    char *copy=theme_dup_string(name);
+    if(copy==NULL){
+        icon_index_max=old_max;
+        return -1;
+    }
+
+    icon_pair_t pair={.name=copy,.index=(theme_icon_t)assigned};
+    if(da_add_loc(sizeof(pair),&icon_rules,&pair,pos)!=0){
+        free(copy);
+        icon_index_max=old_max;
+        return -1;
+    }
+
+    if(theme.name!=NULL&&theme_ensure_icon_slots()){
+        theme_load_icons();
+    }
+    return assigned;
+}
+
+int del_icon_rule(const char *name,theme_icon_t index){
+    if(name==NULL){
+        return 1;
+    }
+
+    size_t pos=icon_rule_lower_bound(name);
+    if(pos>=icon_rules.size||strcmp(icon_rules.arr[pos].name,name)!=0||
+       icon_rules.arr[pos].index!=index){
+        return 1;
+    }
+
+    theme_icon_t removed=icon_rules.arr[pos].index;
+    free(icon_rules.arr[pos].name);
+    da_del(sizeof(icon_pair_t),&icon_rules,pos);
+
+    int used=0;
+    for(size_t i=0;i<icon_rules.size;i++){
+        if(icon_rules.arr[i].index==removed){
+            used=1;
+            break;
+        }
+    }
+    if(!used&&theme.name!=NULL&&theme.icons!=NULL&&(size_t)removed<theme.icon_size){
+        if(theme.icons[(size_t)removed]!=NULL){
+            SDL_DestroyTexture(theme.icons[(size_t)removed]);
+            theme.icons[(size_t)removed]=NULL;
+        }
+    }
+    return 0;
+}
+
+theme_icon_t find_icon(const char *name){
+    if(!icon_rule_name_valid(name)){
+        return ICON_LOST;
+    }
+    size_t pos=icon_rule_lower_bound(name);
+    if(pos<icon_rules.size&&strcmp(icon_rules.arr[pos].name,name)==0){
+        return icon_rules.arr[pos].index;
+    }
+    return ICON_LOST;
 }

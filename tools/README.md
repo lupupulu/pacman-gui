@@ -63,7 +63,8 @@ TTF_Font *font = TTF_OpenFontIO(io, true, 20.0f);
 make font
 ```
 
-构建机需要 Python 3.10+（只在生成嵌入源时用，生成后就是普通 C 文件）。
+构建机需要 Python 3.9+（只在生成嵌入源时用，生成后就是普通 C 文件；
+脚本也兼容 macOS 自带的 3.9）。
 
 ### 当前项目里的结果
 
@@ -76,7 +77,7 @@ make font
 ## `gen_ascii_font.py`
 
 生成 `assets/PacmanPixel-ASCII.ttf` 本身（5×7 等宽像素体，仅 ASCII）。
-需要 Python 3.10+ 和 fontTools：
+需要 Python 3.9+ 和 fontTools：
 
 ```sh
 python3 tools/gen_ascii_font.py
@@ -84,4 +85,49 @@ python3 tools/gen_ascii_font.py
 
 ## `make_icon.py`
 
-项目图标的辅助脚本。
+生成 `assets/icon.png`（256×256）、`assets/icon-64.png`（窗口图标）和
+`assets/icon-1024.png`（macOS `.icns` 母版）。需要 Pillow：
+
+```sh
+python3 tools/make_icon.py
+```
+
+先按 4 倍尺寸绘制再缩小，做超采样抗锯齿。
+
+## `make_icns.sh`
+
+用 macOS 自带的 `sips` 和 `iconutil` 把 PNG 转成 `.icns`。`make app` 会自动调用：
+
+```sh
+sh tools/make_icns.sh assets/icon-1024.png build/icon.iconset build/icon.icns
+```
+
+## `merge_compdb.py`
+
+把 `clang -MJ` 写出的编译片段合并成标准的 `compile_commands.json`，
+供 VS Code 的 C/C++ 扩展或 clangd 使用。`make compdb` 会自动调用：
+
+```sh
+make compdb
+# 等价于：make clean && make COMPDB=1 && python3 tools/merge_compdb.py build/compdb compile_commands.json
+```
+
+## `gen_lost_icon.py`
+
+生成内置主题的 lost 图标：64×64 的 RGBA 问号，输出成可编译的
+`build/lost_icon.c`。`make` 会自动调用，不需要 Pillow：
+
+```sh
+python3 tools/gen_lost_icon.py -o build/lost_icon.c
+```
+
+加 `--png` 可以同时输出默认主题用的 PNG 副本（这个文件是签入仓库的，
+`make` 不会自动改写 `assets/`）：
+
+```sh
+python3 tools/gen_lost_icon.py -o build/lost_icon.c \
+    --png assets/Default/icon/lost.png
+```
+
+生成的数据由 `src/sdlgui_theme.c` 通过 `SDL_CreateSurfaceFrom()` 直接使用，
+运行时不需要外部图标文件；PNG 副本则被默认主题通过 `icon_path` 正常加载。
