@@ -109,7 +109,9 @@ src/CDS/       单头文件配置/TOML 解析库
 packaging/macos/Info.plist   macOS 应用包信息
 build/pacman_pixel_font.c    构建时生成的嵌入字体源（已被 .gitignore 忽略）
 build/lost_icon.c            构建时生成的内置 lost 图标源（已被 .gitignore 忽略）
+build/switch_icon.c          构建时生成的内置开关旋钮源（已被 .gitignore 忽略）
 assets/Default/icon/lost.png 默认主题自带的 lost 图标（由 gen_lost_icon.py 生成）
+assets/Default/icon/switch.png 默认主题自带的开关旋钮图标
 tools/         字体、图标、icns 与编译数据库生成脚本
 assets/        主题、字体、图标
 build/         构建产物（已被 .gitignore 忽略）
@@ -172,6 +174,9 @@ build/         构建产物（已被 .gitignore 忽略）
 由 `tools/gen_lost_icon.py` 在构建时生成到 `build/lost_icon.c`，和嵌入字体一样
 链接进可执行文件，运行时不需要外部图片。
 
+开关旋钮图标由 `tools/gen_switch_icon.py` 生成，规则名是 `switch`。
+默认主题的副本位于 `assets/Default/icon/switch.png`。
+
 同一张图也生成了一份 PNG 副本放在 `assets/Default/icon/lost.png`，所以默认主题
 会直接读取这个文件。`get_icon()` 对所有 lost 图标（内置的、主题自带的）都会按
 当前 `TEXT_CONTEXT` 的文字颜色着色，因此 Bright/Dark 两种配色下都能看清；
@@ -204,6 +209,45 @@ python3 tools/gen_lost_icon.py -o build/lost_icon.c \
 `hl <= 0` 时退回字体行高。整体画布高度取字体行高和图标高度中的较大值，
 图标和文字都垂直居中。
 返回的 `draft_texture_t` 自己持有合成纹理，销毁 draft 时一并释放。
+
+## 开关控件
+
+开关控件和按钮共用 `widget_button_t`，点击后在开/关之间切换：
+
+```c
+static void on_switch(int on,void *data){
+    // on: 0=关，1=开
+}
+
+widget_button_t *sw = widget_create_button_switch(
+    get_root_layout(),
+    make_align(3,3,0,0,0.0f,0.0f,0.0f,0.0f),
+    on_switch,
+    NULL
+);
+
+widget_switch_set(sw,1);          // 程序化打开，不触发 callback
+int on = widget_switch_get(sw);
+```
+
+点击回调的 `status` 是切换后的状态（0/1），不是 `button_status_t`。
+
+开关总长由主题根层的 `switch_width` 控制，高度沿用 `button_height`；
+旋钮图标边长由 `switch_icon_height` 控制，`0` 表示跟随开关高度，默认与开关上下外沿对齐。
+轨道颜色取主题 `color[]` 的开关部分：
+
+- `COLOR_SWITCH_OFF`：关闭轨道
+- `COLOR_SWITCH_ON`：打开轨道
+- `COLOR_SWITCH_KNOB`：旋钮着色
+
+开关悬停时不会额外高亮，只保留开/关两种轨道颜色。
+
+旋钮使用主题图标 `ICON_SWITCH`（默认文件 `assets/Default/icon/switch.png`），
+内嵌一份 64×64 的圆形备用图；主题没有提供旋钮图标时回退到内嵌版本。
+旋钮图标建议用白色/灰度图，控件会按 `COLOR_SWITCH_KNOB` 着色。图标默认铺满
+开关高度，因此圆形边缘与开关上下外沿对齐。
+旋钮位置由主题根层的 `switch_animation_time` 控制动画（默认 120 ms），
+颜色取 `COLOR_SWITCH_KNOB`。
 
 ## 主题与资源搜索路径
 

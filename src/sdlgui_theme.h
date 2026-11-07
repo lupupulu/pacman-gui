@@ -17,7 +17,10 @@ typedef enum {
     COLOR_SECONDARY,
     COLOR_BUTTON,
     COLOR_BUTTON_CONFIRM,
-    COLOR_BUTTON_HIGHLIGHT
+    COLOR_BUTTON_HIGHLIGHT,
+    COLOR_SWITCH_OFF,     /* 开关关闭轨道 */
+    COLOR_SWITCH_ON,      /* 开关打开轨道 */
+    COLOR_SWITCH_KNOB     /* 开关旋钮图标着色 */
 }theme_color_t;
 
 /* 文本级别：同时用作 fonts[]、text_size[]、text_color[] 的下标 */
@@ -27,9 +30,10 @@ typedef enum {
     TEXT_CONTEXT
 }theme_text_t;
 
-/* 内置图标下标。其他图标通过 add_icon_rule() 动态分配，值从 1 开始。 */
+/* 内置图标下标。其他图标通过 add_icon_rule() 动态分配。 */
 typedef enum {
     ICON_LOST=0,
+    ICON_SWITCH=1,   /* 开关旋钮 */
 }theme_icon_t;
 
 typedef struct {
@@ -59,7 +63,10 @@ typedef struct {
 
     float item_height;
     unsigned long button_animation_time;
+    unsigned long switch_animation_time;
     float button_height;
+    float switch_width;      /* 开关总长 */
+    float switch_icon_height;  /* 开关旋钮图标边长；0 表示跟随开关高度 */
     float rect_round_corner;
 
     theme_slice_t *slices;
@@ -86,7 +93,7 @@ unsigned get_divider_color(void);
 const char *get_font(theme_text_t index);   /* 返回字体族名，不是 TTF_Font */
 float get_text_size(theme_text_t index);
 /* 取图标；返回的纹理归主题所有，主题切换/退出后失效。
- * 主题没有该图标时回退到内嵌的 lost 问号。 */
+ * 主题没有该图标时，switch 回退到内嵌旋钮，其余回退到 lost 问号。 */
 SDL_Texture *get_icon(theme_icon_t index);
 const theme_t *get_theme(void);
 const theme_slice_t *get_theme_slice(void);
@@ -97,7 +104,7 @@ const theme_slice_t *get_theme_slice(void);
 TTF_Font *obtain_font(const char *name,float ptsize);
 
 /* 只负责查找并加载图标：在 path 下找 name.png（name 已带 .png 时不重复添加）。
- * path 为 NULL 时只支持内置的 "lost"（编译期内嵌的问号）。返回的纹理由调用方释放。 */
+ * path 为 NULL 时支持内置的 "lost" 和 "switch"。返回的纹理由调用方释放。 */
 SDL_Texture *load_icon(const char *path,const char *name);
 /* 按 name 有序插入规则；index<0 时自动分配新下标。
  * name 必须匹配 [A-Za-z_][A-Za-z0-9_]*（数字不能作首字母）。
@@ -106,7 +113,7 @@ long add_icon_rule(const char *name,long index);
 /* 删除一条规则；返回 0-完成 1-无条目 */
 int del_icon_rule(const char *name,theme_icon_t index);
 /* 按 name 查规则；找不到时返回 ICON_LOST。 */
-theme_icon_t find_icon(const char *name);
+unsigned long find_icon(const char *name);
 
 
 #endif

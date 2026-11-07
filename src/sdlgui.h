@@ -184,7 +184,8 @@ typedef struct {
     draw_func draw;
     clear_func clear;
     SUBLAYOUT_DEF
-    float r;  // 圆角半径
+    float r;  // 圆角半径；auto_radius 时按当前短边的一半重新计算
+    unsigned auto_radius:1;
     unsigned color;
     unsigned border_color;
 }draft_rrect_t;
@@ -302,7 +303,8 @@ int bbox_check_triangle(void *sublayout,float x,float y);  /* 三角形 */
 typedef struct {
     bbox_check_func check;
     SUBLAYOUT_DEF
-    float r;  // 圆角半径
+    float r;  // 圆角半径；auto_radius 时按当前短边的一半重新计算
+    unsigned auto_radius:1;
 }bbox_rrect_t;
 
 bbox_rrect_t *bbox_create_rrect(align_t align,float w,float h,float r);
@@ -367,5 +369,9 @@ void list_draw(void *l);
 void list_update(void *l);
 void list_clear(void *l);
 void list_mouse(void *l);
+
+/* 按逻辑像素滑动列表：off>0 向内容末尾（下/右）移动。
+ * can_be_slided=0 时不生效；越界会夹到有效范围。 */
+void list_slide(layout_list_t *l,float off);
 
 #endif

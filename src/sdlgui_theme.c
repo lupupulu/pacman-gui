@@ -13,9 +13,15 @@
 
 
 /* theme_t 里的 color/text 是 unsigned *，内建主题需要各自准备静态后备数组。 */
-static unsigned builtin_bright_color[]={0xEFF1F5FF,0xCCD0DAFF,0x8CAAEEFF,0xFE640BFF,0xABC4FFFF};
+static unsigned builtin_bright_color[]={
+    0xEFF1F5FF,0xCCD0DAFF,0x8CAAEEFF,0xFE640BFF,0xABC4FFFF,
+    0xCCD0DAFF,0x8CAAEEFF,0x4C4F69FF
+};
 static unsigned builtin_bright_text_color[]={0x4C4F69FF};
-static unsigned builtin_dark_color[]={0x1E1E2EFF,0x313244FF,0x1E66F5FF,0xFAB387FF,0x89B4FAFF};
+static unsigned builtin_dark_color[]={
+    0x1E1E2EFF,0x313244FF,0x1E66F5FF,0xFAB387FF,0x89B4FAFF,
+    0x313244FF,0x1E66F5FF,0xCDD6F4FF
+};
 static unsigned builtin_dark_text_color[]={0xCDD6F4FF};
 static unsigned builtin_text_size[]={20,16,14};
 static char *builtin_font_names[]={NULL};   /* NULL 表示使用内嵌字体 */
@@ -28,7 +34,7 @@ static theme_slice_t builtin_theme_slice[]={
     {
         .name="Bright",
         .color=builtin_bright_color,
-        .color_size=5,
+        .color_size=8,
         .text_color=builtin_bright_text_color,
         .text_color_size=1,
         .divider_color=0xBCC0CCFF
@@ -36,7 +42,7 @@ static theme_slice_t builtin_theme_slice[]={
     {
         .name="Dark",
         .color=builtin_dark_color,
-        .color_size=5,
+        .color_size=8,
         .text_color=builtin_dark_text_color,
         .text_color_size=1,
         .divider_color=0x45475AFF
@@ -56,7 +62,10 @@ static theme_t theme={
 
     .item_height=32.0f,
     .button_animation_time=200,
+    .switch_animation_time=120,
     .button_height=32.0f,
+    .switch_width=64.0f,
+    .switch_icon_height=0.0f,
     .rect_round_corner=10.0f,
 
     .slices=builtin_theme_slice,
@@ -70,18 +79,26 @@ extern const size_t pacman_lost_icon_len;
 extern const int pacman_lost_icon_w;
 extern const int pacman_lost_icon_h;
 
+/* 内置开关旋钮图标：由 tools/gen_switch_icon.py 生成到 build/switch_icon.c。 */
+extern const unsigned char pacman_switch_icon[];
+extern const size_t pacman_switch_icon_len;
+extern const int pacman_switch_icon_w;
+extern const int pacman_switch_icon_h;
+
 typedef struct {
     char *name;          /* 规则名；icon_rules 按 name 升序排列 */
-    theme_icon_t index;
+    unsigned long index;
 }icon_pair_t;
 
 static const icon_pair_t icon_default_rules[]={
-    {.name="lost",.index=ICON_LOST}
+    {.name="lost",.index=ICON_LOST},
+    {.name="switch",.index=ICON_SWITCH}
 };
 
 static darray_t(icon_pair_t) icon_rules;
 static size_t icon_index_max=0;       /* 下一个可分配的图标下标 */
 static SDL_Texture *builtin_lost_texture=NULL;
+static SDL_Texture *builtin_switch_texture=NULL;
 
 static toml_t theme_toml;
 
@@ -92,6 +109,7 @@ static void release_icon_rules(void);
 static void theme_load_icons(void);
 static int theme_ensure_icon_slots(void);
 static int theme_create_builtin_lost(void);
+static int theme_create_builtin_switch(void);
 
 /* 复制字符串；源为 NULL 时返回 NULL */
 static char *theme_dup_string(const char *s){
@@ -234,7 +252,10 @@ static void theme_reset_builtin(void){
     theme.text_size=3;
     theme.item_height=32.0f;
     theme.button_animation_time=200;
+    theme.switch_animation_time=120;
     theme.button_height=32.0f;
+    theme.switch_width=64.0f;
+    theme.switch_icon_height=0.0f;
     theme.rect_round_corner=10.0f;
     theme.slices=builtin_theme_slice;
     theme.slice_size=2;
@@ -267,6 +288,10 @@ int theme_init(void){
     if(!theme_create_builtin_lost()){
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                     _("theme_init: built-in lost icon is unavailable"));
+    }
+    if(!theme_create_builtin_switch()){
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    _("theme_init: built-in switch icon is unavailable"));
     }
     return 1;
 }
@@ -466,7 +491,10 @@ void theme_set(const char *path,const char *file){
     theme_t tmp={0};
     tmp.item_height=32.0f;
     tmp.button_animation_time=200;
+    tmp.switch_animation_time=120;
     tmp.button_height=32.0f;
+    tmp.switch_width=64.0f;
+    tmp.switch_icon_height=0.0f;
     tmp.rect_round_corner=10.0f;
 
     toml_type_t *tp=NULL;
@@ -635,8 +663,35 @@ void theme_set(const char *path,const char *file){
         }
         tmp.button_animation_time=(unsigned long)v;
     }
+    tp=toml_lookup(&t,"",0,"switch_animation_time");
+    if(tp!=NULL){
+        double v=0.0;
+        if(!theme_read_number(tp,&v)||!isfinite(v)||v<=0.0){
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("theme_set: switch_animation_time must be positive"));
+            goto fail;
+        }
+        tmp.switch_animation_time=(unsigned long)v;
+    }
     if(tmp.button_height>tmp.item_height){
         tmp.button_height=tmp.item_height;
+    }
+    tp=toml_lookup(&t,"",0,"switch_width");
+    if(tp!=NULL){
+        double v=0.0;
+        if(!theme_read_number(tp,&v)||!isfinite(v)||v<=0.0){
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("theme_set: switch_width must be positive"));
+            goto fail;
+        }
+        tmp.switch_width=(float)v;
+    }
+    tp=toml_lookup(&t,"",0,"switch_icon_height");
+    if(tp!=NULL){
+        double v=0.0;
+        if(!theme_read_number(tp,&v)||!isfinite(v)||v<0.0){
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("theme_set: switch_icon_height must be non-negative"));
+            goto fail;
+        }
+        tmp.switch_icon_height=(float)v;
     }
     tp=toml_lookup(&t,"",0,"rect_round_corner");
     if(tp!=NULL){
@@ -840,6 +895,11 @@ SDL_Texture *get_icon(theme_icon_t index){
         return theme.icons[slot];
     }
 
+    /* 外部主题缺少开关旋钮时，回退到内置旋钮，而不是 lost 问号 */
+    if(index==ICON_SWITCH){
+        return builtin_switch_texture;
+    }
+
     /* 外部主题可能自己带了 lost.png，缺失的图标先回退到它 */
     if(theme.name!=NULL&&theme.icons!=NULL&&(size_t)ICON_LOST<theme.icon_size&&
        theme.icons[ICON_LOST]!=NULL){
@@ -866,6 +926,10 @@ void theme_quit(void){
     if(builtin_lost_texture!=NULL){
         SDL_DestroyTexture(builtin_lost_texture);
         builtin_lost_texture=NULL;
+    }
+    if(builtin_switch_texture!=NULL){
+        SDL_DestroyTexture(builtin_switch_texture);
+        builtin_switch_texture=NULL;
     }
     toml_unload(&theme_toml);
     release_font_cache();
@@ -1147,6 +1211,23 @@ static SDL_Surface *theme_builtin_lost_surface(void){
                                  pacman_lost_icon_w*4);
 }
 
+/* 内置开关旋钮的 RGBA 数据 -> surface */
+static SDL_Surface *theme_builtin_switch_surface(void){
+    if(pacman_switch_icon_w<=0||pacman_switch_icon_h<=0){
+        return NULL;
+    }
+    size_t expected=(size_t)pacman_switch_icon_w*(size_t)pacman_switch_icon_h*4u;
+    if(pacman_switch_icon_len<expected){
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     _("theme: built-in switch icon has %zu bytes, expected %zu"),
+                     pacman_switch_icon_len,expected);
+        return NULL;
+    }
+    return SDL_CreateSurfaceFrom(pacman_switch_icon_w,pacman_switch_icon_h,
+                                 SDL_PIXELFORMAT_RGBA32,(void *)pacman_switch_icon,
+                                 pacman_switch_icon_w*4);
+}
+
 static SDL_Texture *theme_texture_from_surface(SDL_Surface *surface){
     if(surface==NULL){
         return NULL;
@@ -1182,6 +1263,8 @@ SDL_Texture *load_icon(const char *path,const char *name){
         /* 内置主题没有图标目录，只有编译期嵌入的 lost */
         if(SDL_strcasecmp(filename,"lost.png")==0){
             surface=theme_builtin_lost_surface();
+        }else if(SDL_strcasecmp(filename,"switch.png")==0){
+            surface=theme_builtin_switch_surface();
         }else{
             SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
                          _("load_icon: no built-in icon named %s"),filename);
@@ -1211,6 +1294,19 @@ static int theme_create_builtin_lost(void){
     if(builtin_lost_texture==NULL){
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                      _("theme_init: failed to create the built-in lost icon"));
+        return 0;
+    }
+    return 1;
+}
+
+static int theme_create_builtin_switch(void){
+    if(builtin_switch_texture!=NULL){
+        return 1;
+    }
+    builtin_switch_texture=load_icon(NULL,"switch");
+    if(builtin_switch_texture==NULL){
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     _("theme_init: failed to create the built-in switch icon"));
         return 0;
     }
     return 1;
@@ -1371,7 +1467,7 @@ int del_icon_rule(const char *name,theme_icon_t index){
     return 0;
 }
 
-theme_icon_t find_icon(const char *name){
+unsigned long find_icon(const char *name){
     if(!icon_rule_name_valid(name)){
         return ICON_LOST;
     }

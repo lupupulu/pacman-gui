@@ -21,11 +21,13 @@ FONT_C   := build/pacman_pixel_font.c
 FONT_SYM := pacman_pixel_ttf
 FONT_OBJ := build/obj/pacman_pixel_font.o
 
-# 内置 lost 图标：构建时由 tools/gen_lost_icon.py 生成 build/lost_icon.c
+# 内置图标：构建时分别由 tools/gen_lost_icon.py、tools/gen_switch_icon.py 生成
 LOST_ICON_C   := build/lost_icon.c
 LOST_ICON_OBJ := build/obj/lost_icon.o
+SWITCH_ICON_C   := build/switch_icon.c
+SWITCH_ICON_OBJ := build/obj/switch_icon.o
 
-OBJS    := $(patsubst $(SRCDIR)/%.c,build/obj/%.o,$(SRCS)) $(FONT_OBJ) $(LOST_ICON_OBJ)
+OBJS    := $(patsubst $(SRCDIR)/%.c,build/obj/%.o,$(SRCS)) $(FONT_OBJ) $(LOST_ICON_OBJ) $(SWITCH_ICON_OBJ)
 DEPS    := $(OBJS:.o=.d)
 
 CC       ?= cc
@@ -77,11 +79,13 @@ COMPDB_DIR := build/compdb
 ifeq ($(COMPDB),1)
 COMPDB_FLAG      = -MJ $(COMPDB_DIR)/$(subst /,_,$*).json
 COMPDB_FONT_FLAG = -MJ $(COMPDB_DIR)/pacman_pixel_font.json
-COMPDB_ICON_FLAG = -MJ $(COMPDB_DIR)/lost_icon.json
+COMPDB_ICON_FLAG        = -MJ $(COMPDB_DIR)/lost_icon.json
+COMPDB_SWITCH_ICON_FLAG = -MJ $(COMPDB_DIR)/switch_icon.json
 else
 COMPDB_FLAG      =
 COMPDB_FONT_FLAG =
 COMPDB_ICON_FLAG =
+COMPDB_SWITCH_ICON_FLAG =
 endif
 
 # 内存/未定义行为检查版本（注意会明显变慢）
@@ -117,6 +121,14 @@ $(LOST_ICON_C): tools/gen_lost_icon.py
 $(LOST_ICON_OBJ): $(LOST_ICON_C)
 	@mkdir -p $(dir $@) $(COMPDB_DIR)
 	$(CC) $(CFLAGS) $(COMPDB_ICON_FLAG) -c $(LOST_ICON_C) -o $@
+
+$(SWITCH_ICON_C): tools/gen_switch_icon.py
+	@mkdir -p $(dir $(SWITCH_ICON_C))
+	$(PYTHON) tools/gen_switch_icon.py -o $(SWITCH_ICON_C)
+
+$(SWITCH_ICON_OBJ): $(SWITCH_ICON_C)
+	@mkdir -p $(dir $@) $(COMPDB_DIR)
+	$(CC) $(CFLAGS) $(COMPDB_SWITCH_ICON_FLAG) -c $(SWITCH_ICON_C) -o $@
 
 run: $(TARGET)
 	./$(TARGET)

@@ -10,12 +10,16 @@
 #   item_height        列表项 / 按钮的高度，单位 px
 #   button_height      默认按钮高度，单位 px（不得高于 item_height）
 #   button_animation_time  按钮颜色渐变动画时长，单位 ms
+#   switch_animation_time  开关旋钮滑动动画时长，单位 ms
+#   switch_width       开关总长（宽度），单位 px
+#   switch_icon_height   开关旋钮图标边长，单位 px；0 表示跟随开关高度
 #   rect_round_corner  控件圆角半径，单位 px，0 表示直角
 #
 # 每个主题（[Bright]、[Dark]……）：
 #   color[]        调色板，颜色写成 0xRRGGBBAA
 #   text_color[]   文字颜色
 #   divider_color  分割线颜色（单个 0xRRGGBBAA；不写时用 color[1]）
+#   color[5..7]    开关：关闭轨道、打开轨道、旋钮
 
 version = "0.0.1"
 name = "Default"
@@ -26,15 +30,20 @@ text_size = [ 20 , 16 , 14 ]
 item_height = 32.0
 button_height = 32.0
 button_animation_time = 200
+switch_animation_time = 120
+switch_width = 64.0
+switch_icon_height = 0.0
 rect_round_corner = 10.0
 # icon_path = "icon"
 
 [Bright]
-color = [ 0xEFF1F5FF, 0xCCD0DAFF, 0x8CAAEEFF, 0xFE640BFF, 0xABC4FFFF ]
+color = [ 0xEFF1F5FF, 0xCCD0DAFF, 0x8CAAEEFF, 0xFE640BFF, 0xABC4FFFF,
+          0xCCD0DAFF, 0x8CAAEEFF, 0x4C4F69FF ]
 text_color = [ 0x4C4F69FF ]
 divider_color = 0xBCC0CCFF
 
 [Dark]
-color = [ 0x1E1E2EFF, 0x313244FF, 0x1E66F5FF, 0xFAB387FF, 0x89B4FAFF ]
+color = [ 0x1E1E2EFF, 0x313244FF, 0x1E66F5FF, 0xFAB387FF, 0x89B4FAFF,
+          0x313244FF, 0x1E66F5FF, 0xCDD6F4FF ]
 text_color = [ 0xCDD6F4FF ]
 divider_color = 0x45475AFF

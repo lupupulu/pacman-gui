@@ -8,5 +8,8 @@ hide/
 __pycache__/
 *.pyc
 
+# 编辑器本地配置
+.vscode/
+
 # macOS
 .DS_Store

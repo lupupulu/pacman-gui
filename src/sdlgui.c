@@ -675,10 +675,10 @@ void layout_mouse(void *p){
         if(!son[i]->enable||!son[i]->active){
             continue;
         }
+        layout_mouse(son[i]);
         if(son[i]->mouse){
             son[i]->mouse(son[i]);
         }
-        layout_mouse(son[i]);
     }
 }
 
@@ -800,20 +800,88 @@ static void draft_set_draw_color(unsigned color){
     SDL_SetRenderDrawColor(renderer,c.r,c.g,c.b,c.a);
 }
 
-/* 实心圆：逐行画水平线，避免引入额外的几何库 */
-static void draft_fill_circle(float cx,float cy,float radius,SDL_Color color){
+#define DRAFT_CIRCLE_MAX_SEGMENTS 96
+
+/* 用三角扇画实心圆：比逐行 sqrt 更贴合圆形轮廓，圆角处不会出现台阶 */
+static void draft_fill_circle_geometry(float cx,float cy,float radius,SDL_Color color){
     if(radius<=0.0f){
         return;
     }
+
+    int segments=(int)(radius*3.0f);
+    if(segments<16){
+        segments=16;
+    }else if(segments>DRAFT_CIRCLE_MAX_SEGMENTS){
+        segments=DRAFT_CIRCLE_MAX_SEGMENTS;
+    }
+
+    SDL_Vertex vertices[DRAFT_CIRCLE_MAX_SEGMENTS+1];
+    int indices[DRAFT_CIRCLE_MAX_SEGMENTS*3];
+    SDL_FColor fcolor={
+        .r=(float)color.r/255.0f,
+        .g=(float)color.g/255.0f,
+        .b=(float)color.b/255.0f,
+        .a=(float)color.a/255.0f
+    };
+
+    vertices[0]=(SDL_Vertex){
+        .position={cx,cy},
+        .color=fcolor,
+        .tex_coord={0.0f,0.0f}
+    };
+    for(int i=0;i<segments;i++){
+        float angle=(float)i*2.0f*SDL_PI_F/(float)segments;
+        vertices[i+1]=(SDL_Vertex){
+            .position={cx+SDL_cosf(angle)*radius,cy+SDL_sinf(angle)*radius},
+            .color=fcolor,
+            .tex_coord={0.0f,0.0f}
+        };
+
+        indices[i*3]=0;
+        indices[i*3+1]=i+1;
+        indices[i*3+2]=(i+1==segments)?1:i+2;
+    }
+
+    SDL_RenderGeometry(renderer,NULL,vertices,segments+1,indices,segments*3);
+}
+
+/* 实心圆 */
+static void draft_fill_circle(float cx,float cy,float radius,SDL_Color color){
+    draft_fill_circle_geometry(cx,cy,radius,color);
+}
+
+/* 胶囊形：中间矩形 + 两端圆形。用于全圆角（包括负半径）的情况。 */
+static void draft_fill_capsule(float x,float y,float w,float h,SDL_Color color){
+    if(w<=0.0f||h<=0.0f){
+        return;
+    }
+
     SDL_SetRenderDrawColor(renderer,color.r,color.g,color.b,color.a);
-    int r=(int)(radius+0.5f);
-    for(int dy=-r;dy<=r;dy++){
-        float dx=SDL_sqrtf((float)(r*r-dy*dy));
-        SDL_RenderLine(renderer,cx-dx,cy+(float)dy,cx+dx,cy+(float)dy);
+    if(w>h){
+        float r=h/2.0f;
+        SDL_FRect middle={.x=x+r,.y=y,.w=w-r*2.0f,.h=h};
+        if(middle.w>0.0f){
+            SDL_RenderFillRect(renderer,&middle);
+        }
+        draft_fill_circle_geometry(x+r,y+r,r,color);
+        draft_fill_circle_geometry(x+w-r,y+r,r,color);
+    }else if(w<h){
+        float r=w/2.0f;
+        SDL_FRect middle={.x=x,.y=y+r,.w=w,.h=h-r*2.0f};
+        if(middle.h>0.0f){
+            SDL_RenderFillRect(renderer,&middle);
+        }
+        draft_fill_circle_geometry(x+r,y+r,r,color);
+        draft_fill_circle_geometry(x+r,y+h-r,r,color);
+    }else{
+        draft_fill_circle_geometry(x+w/2.0f,y+h/2.0f,w/2.0f,color);
     }
 }
 
-/* 实心圆角矩形：同样逐行画水平线，四条圆角按半径内缩 */
+#define DRAFT_RRECT_MAX_SEGMENTS 64
+
+/* 实心圆角矩形：用中心三角扇覆盖圆角外轮廓。
+ * 不再逐行 sqrt 扫描，避免圆弧处出现横向台阶。 */
 static void draft_fill_rrect(float x,float y,float w,float h,float r,SDL_Color color){
     if(w<=0.0f||h<=0.0f){
         return;
@@ -822,20 +890,72 @@ static void draft_fill_rrect(float x,float y,float w,float h,float r,SDL_Color c
     if(r>max_r){ r=max_r; }
     if(r<0.0f){ r=0.0f; }
 
-    SDL_SetRenderDrawColor(renderer,color.r,color.g,color.b,color.a);
-    for(float yy=0.5f;yy<h;yy+=1.0f){
-        float inset=0.0f;
-        if(r>0.0f){
-            if(yy<r){
-                float dy=r-yy;
-                inset=r-SDL_sqrtf(r*r-dy*dy);
-            }else if(yy>h-r){
-                float dy=yy-(h-r);
-                inset=r-SDL_sqrtf(r*r-dy*dy);
-            }
-        }
-        SDL_RenderLine(renderer,x+inset,y+yy,x+w-inset,y+yy);
+    if(r<=0.0f){
+        SDL_SetRenderDrawColor(renderer,color.r,color.g,color.b,color.a);
+        SDL_FRect rect={.x=x,.y=y,.w=w,.h=h};
+        SDL_RenderFillRect(renderer,&rect);
+        return;
     }
+
+    int segments=(int)(r*1.5f);
+    if(segments<6){
+        segments=6;
+    }else if(segments>DRAFT_RRECT_MAX_SEGMENTS){
+        segments=DRAFT_RRECT_MAX_SEGMENTS;
+    }
+
+    enum{ MAX_POINTS=4*(DRAFT_RRECT_MAX_SEGMENTS+1) };
+    SDL_Vertex vertices[MAX_POINTS+1];
+    int indices[MAX_POINTS*3];
+    SDL_FColor fcolor={
+        .r=(float)color.r/255.0f,
+        .g=(float)color.g/255.0f,
+        .b=(float)color.b/255.0f,
+        .a=(float)color.a/255.0f
+    };
+
+    int count=0;
+    vertices[count++]=(SDL_Vertex){
+        .position={x+w/2.0f,y+h/2.0f},
+        .color=fcolor,
+        .tex_coord={0.0f,0.0f}
+    };
+
+    const float centers[4][2]={
+        {x+r,y+r},
+        {x+w-r,y+r},
+        {x+w-r,y+h-r},
+        {x+r,y+h-r}
+    };
+    const float starts[4]={
+        SDL_PI_F,
+        SDL_PI_F*1.5f,
+        0.0f,
+        SDL_PI_F*0.5f
+    };
+
+    for(int corner=0;corner<4;corner++){
+        for(int i=0;i<=segments;i++){
+            float angle=starts[corner]+SDL_PI_F*0.5f*(float)i/(float)segments;
+            vertices[count++]=(SDL_Vertex){
+                .position={
+                    centers[corner][0]+SDL_cosf(angle)*r,
+                    centers[corner][1]+SDL_sinf(angle)*r
+                },
+                .color=fcolor,
+                .tex_coord={0.0f,0.0f}
+            };
+        }
+    }
+
+    int perimeter=count-1;
+    for(int i=0;i<perimeter;i++){
+        indices[i*3]=0;
+        indices[i*3+1]=i+1;
+        indices[i*3+2]=(i+1==perimeter)?1:i+2;
+    }
+
+    SDL_RenderGeometry(renderer,NULL,vertices,count,indices,perimeter*3);
 }
 
 draft_default_t *draft_create_default(draw_func draw,align_t align,float w,float h,unsigned color,unsigned border_color){
@@ -991,12 +1111,21 @@ draft_rrect_t *draft_create_rrect(align_t align,float w,float h,float r,unsigned
     if(d==NULL){
         return NULL;
     }
+    int auto_radius=0;
+    if(r<0.0f){
+        auto_radius=1;
+        r=(w<h?w:h)/2.0f;
+        if(r<0.0f){
+            r=0.0f;
+        }
+    }
     d->draw=draft_draw_rrect;
     d->parent=NULL;
     d->align=align;
     d->width=w;
     d->height=h;
     d->r=r;
+    d->auto_radius=auto_radius?1u:0u;
     d->color=color;
     d->border_color=border_color;
     return d;
@@ -1012,13 +1141,38 @@ void draft_draw_rrect(void *p){
         return;
     }
 
+    /* 负半径（auto_radius）表示“全圆角”：按当前短边的一半计算 */
+    float r=d->r;
+    float max_r=(d->width<d->height?d->width:d->height)/2.0f;
+    if(d->auto_radius||r<0.0f){
+        r=max_r;
+    }else if(r>max_r){
+        r=max_r;
+    }
+
+    /* 全圆角用“矩形 + 两个圆”绘制，避免逐行扫描在圆弧处产生台阶。
+     * 负半径和 auto_radius 都按全圆角处理。 */
+    int capsule=d->auto_radius||(r>=max_r-0.01f);
+    if(capsule){
+        if(draft_has_border(d->border_color)){
+            draft_fill_capsule(d->x,d->y,d->width,d->height,draft_color(d->border_color));
+            if(d->width>2.0f&&d->height>2.0f){
+                draft_fill_capsule(d->x+1.0f,d->y+1.0f,d->width-2.0f,d->height-2.0f,draft_color(d->color));
+            }
+        }else{
+            draft_fill_capsule(d->x,d->y,d->width,d->height,draft_color(d->color));
+        }
+        return;
+    }
+
     if(draft_has_border(d->border_color)){
-        draft_fill_rrect(d->x,d->y,d->width,d->height,d->r,draft_color(d->border_color));
+        draft_fill_rrect(d->x,d->y,d->width,d->height,r,draft_color(d->border_color));
         if(d->width>2.0f&&d->height>2.0f){
-            draft_fill_rrect(d->x+1.0f,d->y+1.0f,d->width-2.0f,d->height-2.0f,d->r-1.0f,draft_color(d->color));
+            float inner_r=(r>1.0f)?r-1.0f:0.0f;
+            draft_fill_rrect(d->x+1.0f,d->y+1.0f,d->width-2.0f,d->height-2.0f,inner_r,draft_color(d->color));
         }
     }else{
-        draft_fill_rrect(d->x,d->y,d->width,d->height,d->r,draft_color(d->color));
+        draft_fill_rrect(d->x,d->y,d->width,d->height,r,draft_color(d->color));
     }
 }
 
@@ -1852,8 +2006,12 @@ int bbox_check_rrect(void *p,float x,float y){ /* 圆角矩形 */
     }
 
     float r=sl->r;
-    if(r>w/2.0f){ r=w/2.0f; }  /* 半径超过一半就按最大圆角算 */
-    if(r>h/2.0f){ r=h/2.0f; }
+    float max_r=(w<h?w:h)/2.0f;
+    if(sl->auto_radius||r<0.0f){
+        r=max_r;               /* 负半径 = 全圆角，取短边的一半 */
+    }else if(r>max_r){
+        r=max_r;
+    }
     if(r<=0.0f){
         return TRUE;           /* 没圆角，退化成普通矩形 */
     }
@@ -1940,11 +2098,20 @@ bbox_rrect_t *bbox_create_rrect(align_t align,float w,float h,float r){
     if(bbox==NULL){
         return NULL;
     }
+    int auto_radius=0;
+    if(r<0.0f){
+        auto_radius=1;
+        r=(w<h?w:h)/2.0f;
+        if(r<0.0f){
+            r=0.0f;
+        }
+    }
     bbox->check=bbox_check_rrect;
     bbox->align=align;
     bbox->width=w;
     bbox->height=h;
     bbox->r=r;
+    bbox->auto_radius=auto_radius?1u:0u;
     return bbox;
 }
 
@@ -2449,6 +2616,13 @@ void list_clear(void *p){
     l->can_be_slided=0;
 }
 
+void list_slide(layout_list_t *l,float off){
+    if(l==NULL||!l->can_be_slided||off==0.0f){
+        return;
+    }
+    list_clamp_scroll(l,list_scroll_offset(l)+off);
+}
+
 void list_update(void *p){
     layout_list_t *l=p;
     if(l==NULL){
@@ -2484,6 +2658,12 @@ void list_mouse(void *p){
     }
 
     layout_update_ancestors((sublayout_t *)&l->l);
+
+    /* 鼠标不在 list 内时不处理滚轮，也不把事件交给子布局 */
+    if(!list_mouse_inside(l)){
+        return;
+    }
+
     list_handle_wheel(l);
     list_begin(l);
 
@@ -2501,4 +2681,10 @@ void list_mouse(void *p){
         layout_mouse(item);
     }
     list_end(l);
+
+    /* 只有可滚动的 list 才消费滚轮；can_be_slided=0 时留给其他布局 */
+    if(l->can_be_slided){
+        mouse_wheel[0]=0.0f;
+        mouse_wheel[1]=0.0f;
+    }
 }

@@ -131,3 +131,13 @@ python3 tools/gen_lost_icon.py -o build/lost_icon.c \
 
 生成的数据由 `src/sdlgui_theme.c` 通过 `SDL_CreateSurfaceFrom()` 直接使用，
 运行时不需要外部图标文件；PNG 副本则被默认主题通过 `icon_path` 正常加载。
+
+## `gen_switch_icon.py`
+
+生成默认的开关旋钮图标：64×64 的白色抗锯齿圆，输出 `build/switch_icon.c`
+和可选的 `assets/Default/icon/switch.png`。开关控件会按主题旋钮颜色给它着色。
+
+```sh
+python3 tools/gen_switch_icon.py -o build/switch_icon.c \
+    --png assets/Default/icon/switch.png
+```
