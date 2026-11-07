@@ -105,13 +105,13 @@ src/sdlgui.h
 src/sdlgui_theme.c   主题、配色、字体缓存与 TOML 配置
 src/sdlgui_theme.h
 src/sdlgui_fontlookup.c/.h   字体族名 -> 字体文件（macOS CoreText / Linux fontconfig）
+src/sdlgui_widget.c/.h   按钮与开关控件
 src/CDS/       单头文件配置/TOML 解析库
 packaging/macos/Info.plist   macOS 应用包信息
 build/pacman_pixel_font.c    构建时生成的嵌入字体源（已被 .gitignore 忽略）
 build/lost_icon.c            构建时生成的内置 lost 图标源（已被 .gitignore 忽略）
-build/switch_icon.c          构建时生成的内置开关旋钮源（已被 .gitignore 忽略）
 assets/Default/icon/lost.png 默认主题自带的 lost 图标（由 gen_lost_icon.py 生成）
-assets/Default/icon/switch.png 默认主题自带的开关旋钮图标
+assets/Default/icon/knob.png 默认主题自带的开关旋钮图标（运行时加载，不嵌入）
 tools/         字体、图标、icns 与编译数据库生成脚本
 assets/        主题、字体、图标
 build/         构建产物（已被 .gitignore 忽略）
@@ -168,14 +168,16 @@ build/         构建产物（已被 .gitignore 忽略）
   自动分配下标；`del_icon_rule(name,index)` 删除规则并回收不再使用的纹理。
 - 规则名必须匹配 `[A-Za-z_][A-Za-z0-9_]*`：只允许大小写字母、数字和下划线，
   且数字不能作为首字母。非法名字会被 `add_icon_rule()` 拒绝并记录警告。
-- `get_icon(index)` 在主题没有对应图标时回退到内置 lost 图标。
+- `get_icon(index)` 对普通图标在主题缺失时回退到 lost；`ICON_KNOB` 例外，
+  缺失时返回 `NULL`，开关控件只绘制轨道。
 
 内置主题的 `icon_path` 为 `NULL`，它的 lost 图标是一个 64×64 的白色问号，
 由 `tools/gen_lost_icon.py` 在构建时生成到 `build/lost_icon.c`，和嵌入字体一样
 链接进可执行文件，运行时不需要外部图片。
 
-开关旋钮图标由 `tools/gen_switch_icon.py` 生成，规则名是 `switch`。
-默认主题的副本位于 `assets/Default/icon/switch.png`。
+开关旋钮图标是纯运行时主题资源，规则名是 `knob`，默认文件为
+`assets/Default/icon/knob.png`；它不会嵌入可执行文件。主题没有提供旋钮图标时
+开关只绘制轨道，不会回退到内嵌图片或色块。
 
 同一张图也生成了一份 PNG 副本放在 `assets/Default/icon/lost.png`，所以默认主题
 会直接读取这个文件。`get_icon()` 对所有 lost 图标（内置的、主题自带的）都会按
@@ -183,11 +185,12 @@ build/         构建产物（已被 .gitignore 忽略）
 其他图标保持原色。外部主题缺少某个图标时，会优先回退到主题自己的
 `icon/lost.png`，没有才使用内置问号。
 
-需要重新生成这两份文件时：
+需要重新生成 lost 图标或开关旋钮 PNG 时：
 
 ```sh
 python3 tools/gen_lost_icon.py -o build/lost_icon.c \
     --png assets/Default/icon/lost.png
+python3 tools/gen_switch_icon.py --png assets/Default/icon/knob.png
 ```
 
 ### 图标 + 文字
@@ -212,14 +215,16 @@ python3 tools/gen_lost_icon.py -o build/lost_icon.c \
 
 ## 开关控件
 
-开关控件和按钮共用 `widget_button_t`，点击后在开/关之间切换：
+开关控件是独立的 `widget_switch_t`，不共用按钮结构，点击后在开/关之间切换：
 
 ```c
+#include "sdlgui_widget.h"
+
 static void on_switch(int on,void *data){
     // on: 0=关，1=开
 }
 
-widget_button_t *sw = widget_create_button_switch(
+widget_switch_t *sw = widget_create_switch(
     get_root_layout(),
     make_align(3,3,0,0,0.0f,0.0f,0.0f,0.0f),
     on_switch,
@@ -230,7 +235,7 @@ widget_switch_set(sw,1);          // 程序化打开，不触发 callback
 int on = widget_switch_get(sw);
 ```
 
-点击回调的 `status` 是切换后的状态（0/1），不是 `button_status_t`。
+点击回调的参数是切换后的状态（0/1），不是 `button_status_t`。
 
 开关总长由主题根层的 `switch_width` 控制，高度沿用 `button_height`；
 旋钮图标边长由 `switch_icon_height` 控制，`0` 表示跟随开关高度，默认与开关上下外沿对齐。
@@ -238,16 +243,13 @@ int on = widget_switch_get(sw);
 
 - `COLOR_SWITCH_OFF`：关闭轨道
 - `COLOR_SWITCH_ON`：打开轨道
-- `COLOR_SWITCH_KNOB`：旋钮着色
 
 开关悬停时不会额外高亮，只保留开/关两种轨道颜色。
 
-旋钮使用主题图标 `ICON_SWITCH`（默认文件 `assets/Default/icon/switch.png`），
-内嵌一份 64×64 的圆形备用图；主题没有提供旋钮图标时回退到内嵌版本。
-旋钮图标建议用白色/灰度图，控件会按 `COLOR_SWITCH_KNOB` 着色。图标默认铺满
-开关高度，因此圆形边缘与开关上下外沿对齐。
-旋钮位置由主题根层的 `switch_animation_time` 控制动画（默认 120 ms），
-颜色取 `COLOR_SWITCH_KNOB`。
+旋钮使用主题图标 `ICON_KNOB`（默认文件 `assets/Default/icon/knob.png`），
+按原图颜色绘制，不再按颜色字段着色。图标默认铺满开关高度，因此圆形边缘与
+开关上下外沿对齐；主题没有提供该图标时只绘制轨道，不回退到色块。
+旋钮位置由主题根层的 `switch_animation_time` 控制动画（默认 120 ms）。
 
 ## 主题与资源搜索路径
 

@@ -147,8 +147,6 @@ layout_rect_t *create_layout_rect(void *parent,float w,float h,align_t align);
 
 
 
-typedef void(*animate_func)(void*);
-
 typedef struct {
     draw_func draw;
     clear_func clear;
@@ -231,11 +229,13 @@ typedef struct {
     unsigned owns_texture:1;   /* clear 时是否销毁 tex；用户传入的纹理由用户释放 */
 }draft_texture_t;
 
+/* 纹理 draft 的 w/h 是目标逻辑尺寸：
+ * 任一 <=0 时按原图宽高比缩放；两者都 <=0 时使用原图尺寸。 */
 /* 用用户已有的纹理创建 draft；draft 不接管所有权，clear 时不会销毁 tex。 */
-draft_texture_t *draft_create_texture(align_t align,SDL_Texture *tex);
+draft_texture_t *draft_create_texture(align_t align,SDL_Texture *tex,float w,float h);
 /* 图片版本自己创建纹理，clear 时自动销毁。 */
-draft_texture_t *draft_create_picture_from_memory(align_t align,const char *file,size_t size);
-draft_texture_t *draft_create_picture(align_t align,const char *path);
+draft_texture_t *draft_create_picture_from_memory(align_t align,const char *file,size_t size,float w,float h);
+draft_texture_t *draft_create_picture(align_t align,const char *path,float w,float h);
 /* 图标 + 文字合成：context 里的 \name 替换为对应图标，\\ 输出一个反斜杠，
  * 末尾单独的 \ 被忽略。文字不换行，wl>0 时按逻辑宽度裁剪；
  * hl>0 时图标高度取 hl（逻辑坐标）、宽度等比缩放，hl<=0 时用字体行高。 */
@@ -243,7 +243,9 @@ draft_texture_t *draft_create_icon_with_text(align_t align,TTF_Font *font,char *
 void draft_draw_texture(void *l);
 void draft_texture_clear(void *l);   // 只释放由图片创建的贴图，用户传入的纹理不动
 
-typedef struct {
+typedef void(*animate_func)(void *animation);
+
+typedef struct layout_animation_t{
     layout_t l;
 
     unsigned draft_resizable:1;
@@ -254,6 +256,7 @@ typedef struct {
     unsigned long timer;  // 计时器
     int lasting; // 动画还在持续
     int status;  // 状态，0为不刷新动画
+    void *data;
 }layout_animation_t;
 
 /* 可变参数是若干 draft 指针，以 NULL 结尾；draft 所有权交给 animation，

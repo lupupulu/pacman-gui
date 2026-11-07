@@ -79,12 +79,6 @@ extern const size_t pacman_lost_icon_len;
 extern const int pacman_lost_icon_w;
 extern const int pacman_lost_icon_h;
 
-/* 内置开关旋钮图标：由 tools/gen_switch_icon.py 生成到 build/switch_icon.c。 */
-extern const unsigned char pacman_switch_icon[];
-extern const size_t pacman_switch_icon_len;
-extern const int pacman_switch_icon_w;
-extern const int pacman_switch_icon_h;
-
 typedef struct {
     char *name;          /* 规则名；icon_rules 按 name 升序排列 */
     unsigned long index;
@@ -92,13 +86,12 @@ typedef struct {
 
 static const icon_pair_t icon_default_rules[]={
     {.name="lost",.index=ICON_LOST},
-    {.name="switch",.index=ICON_SWITCH}
+    {.name="knob",.index=ICON_KNOB}
 };
 
 static darray_t(icon_pair_t) icon_rules;
 static size_t icon_index_max=0;       /* 下一个可分配的图标下标 */
 static SDL_Texture *builtin_lost_texture=NULL;
-static SDL_Texture *builtin_switch_texture=NULL;
 
 static toml_t theme_toml;
 
@@ -109,7 +102,6 @@ static void release_icon_rules(void);
 static void theme_load_icons(void);
 static int theme_ensure_icon_slots(void);
 static int theme_create_builtin_lost(void);
-static int theme_create_builtin_switch(void);
 
 /* 复制字符串；源为 NULL 时返回 NULL */
 static char *theme_dup_string(const char *s){
@@ -288,10 +280,6 @@ int theme_init(void){
     if(!theme_create_builtin_lost()){
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                     _("theme_init: built-in lost icon is unavailable"));
-    }
-    if(!theme_create_builtin_switch()){
-        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
-                    _("theme_init: built-in switch icon is unavailable"));
     }
     return 1;
 }
@@ -895,9 +883,9 @@ SDL_Texture *get_icon(theme_icon_t index){
         return theme.icons[slot];
     }
 
-    /* 外部主题缺少开关旋钮时，回退到内置旋钮，而不是 lost 问号 */
-    if(index==ICON_SWITCH){
-        return builtin_switch_texture;
+    /* 旋钮只从主题加载，不提供内置或 lost 回退 */
+    if(index==ICON_KNOB){
+        return NULL;
     }
 
     /* 外部主题可能自己带了 lost.png，缺失的图标先回退到它 */
@@ -926,10 +914,6 @@ void theme_quit(void){
     if(builtin_lost_texture!=NULL){
         SDL_DestroyTexture(builtin_lost_texture);
         builtin_lost_texture=NULL;
-    }
-    if(builtin_switch_texture!=NULL){
-        SDL_DestroyTexture(builtin_switch_texture);
-        builtin_switch_texture=NULL;
     }
     toml_unload(&theme_toml);
     release_font_cache();
@@ -1211,23 +1195,6 @@ static SDL_Surface *theme_builtin_lost_surface(void){
                                  pacman_lost_icon_w*4);
 }
 
-/* 内置开关旋钮的 RGBA 数据 -> surface */
-static SDL_Surface *theme_builtin_switch_surface(void){
-    if(pacman_switch_icon_w<=0||pacman_switch_icon_h<=0){
-        return NULL;
-    }
-    size_t expected=(size_t)pacman_switch_icon_w*(size_t)pacman_switch_icon_h*4u;
-    if(pacman_switch_icon_len<expected){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     _("theme: built-in switch icon has %zu bytes, expected %zu"),
-                     pacman_switch_icon_len,expected);
-        return NULL;
-    }
-    return SDL_CreateSurfaceFrom(pacman_switch_icon_w,pacman_switch_icon_h,
-                                 SDL_PIXELFORMAT_RGBA32,(void *)pacman_switch_icon,
-                                 pacman_switch_icon_w*4);
-}
-
 static SDL_Texture *theme_texture_from_surface(SDL_Surface *surface){
     if(surface==NULL){
         return NULL;
@@ -1263,8 +1230,6 @@ SDL_Texture *load_icon(const char *path,const char *name){
         /* 内置主题没有图标目录，只有编译期嵌入的 lost */
         if(SDL_strcasecmp(filename,"lost.png")==0){
             surface=theme_builtin_lost_surface();
-        }else if(SDL_strcasecmp(filename,"switch.png")==0){
-            surface=theme_builtin_switch_surface();
         }else{
             SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION,
                          _("load_icon: no built-in icon named %s"),filename);
@@ -1294,19 +1259,6 @@ static int theme_create_builtin_lost(void){
     if(builtin_lost_texture==NULL){
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                      _("theme_init: failed to create the built-in lost icon"));
-        return 0;
-    }
-    return 1;
-}
-
-static int theme_create_builtin_switch(void){
-    if(builtin_switch_texture!=NULL){
-        return 1;
-    }
-    builtin_switch_texture=load_icon(NULL,"switch");
-    if(builtin_switch_texture==NULL){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                     _("theme_init: failed to create the built-in switch icon"));
         return 0;
     }
     return 1;

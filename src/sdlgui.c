@@ -1376,6 +1376,9 @@ static int draft_text_build_cache(draft_text_t *d){
         SDL_Surface *surface=draft_text_render_segment(d,start,length,color);
         if(surface!=NULL){
             SDL_Rect dst={.x=0,.y=y,.w=surface->w,.h=surface->h};
+            /* TTF 表面是直通 alpha；用 NONE 复制才能保持直通 alpha，
+             * 否则 BLEND 到透明合成表面会把颜色预乘，绘制时产生深色描边。 */
+            SDL_SetSurfaceBlendMode(surface,SDL_BLENDMODE_NONE);
             SDL_BlitSurface(surface,NULL,composite,&dst);
             y+=(d->width_limit>0.0f)?surface->h:line_height;
             SDL_DestroySurface(surface);
@@ -1396,6 +1399,7 @@ static int draft_text_build_cache(draft_text_t *d){
         return 0;
     }
     SDL_SetTextureScaleMode(cache,SDL_SCALEMODE_NEAREST);
+    SDL_SetTextureBlendMode(cache,SDL_BLENDMODE_BLEND);
 
     float scale=sdlgui_get_scale();
     d->cache=cache;
@@ -1455,6 +1459,7 @@ static void draft_text_draw_direct(draft_text_t *d){
             SDL_Texture *tex=SDL_CreateTextureFromSurface(renderer,surface);
             if(tex!=NULL){
                 SDL_SetTextureScaleMode(tex,SDL_SCALEMODE_NEAREST);
+                SDL_SetTextureBlendMode(tex,SDL_BLENDMODE_BLEND);
                 float src_height=draw_height*scale;
                 if(src_height>(float)surface->h){
                     src_height=(float)surface->h;
@@ -1547,8 +1552,31 @@ void draft_texture_clear(void *p){
     d->owns_texture=0;
 }
 
-/* 公共入口只接收用户已有的纹理，不接管所有权；失败时 tex 仍归调用方。 */
-draft_texture_t *draft_create_texture(align_t align,SDL_Texture *tex){
+/* 解析纹理目标尺寸：w/h 都 <=0 时用原尺寸；只有一个 <=0 时按原宽高比缩放。 */
+static int draft_texture_size(SDL_Texture *tex,float w,float h,float *out_w,float *out_h){
+    float tex_w=0.0f;
+    float tex_h=0.0f;
+    if(!SDL_GetTextureSize(tex,&tex_w,&tex_h)||tex_w<=0.0f||tex_h<=0.0f){
+        return 0;
+    }
+
+    if(w<=0.0f&&h<=0.0f){
+        w=tex_w;
+        h=tex_h;
+    }else if(w<=0.0f){
+        w=tex_w*(h/tex_h);
+    }else if(h<=0.0f){
+        h=tex_h*(w/tex_w);
+    }
+
+    *out_w=w;
+    *out_h=h;
+    return 1;
+}
+
+/* 公共入口只接收用户已有的纹理，不接管所有权；失败时 tex 仍归调用方。
+ * w/h 任一 <=0 时按原图比例缩放；都为 <=0 时使用原尺寸。 */
+draft_texture_t *draft_create_texture(align_t align,SDL_Texture *tex,float w,float h){
     if(tex==NULL){
         return NULL;
     }
@@ -1564,7 +1592,7 @@ draft_texture_t *draft_create_texture(align_t align,SDL_Texture *tex){
     d->tex=tex;
     d->owns_texture=0;
 
-    if(!SDL_GetTextureSize(tex,&d->width,&d->height)){
+    if(!draft_texture_size(tex,w,h,&d->width,&d->height)){
         d->tex=NULL;
         free(d);
         return NULL;
@@ -1573,7 +1601,7 @@ draft_texture_t *draft_create_texture(align_t align,SDL_Texture *tex){
 }
 
 /* 图片加载路径自己创建纹理，也由自己释放，所以不经过 draft_create_texture。 */
-static draft_texture_t *draft_create_texture_from_surface(align_t align,SDL_Surface *surface){
+static draft_texture_t *draft_create_texture_from_surface(align_t align,SDL_Surface *surface,float w,float h){
     if(surface==NULL){
         return NULL;
     }
@@ -1600,7 +1628,7 @@ static draft_texture_t *draft_create_texture_from_surface(align_t align,SDL_Surf
     d->tex=tex;
     d->owns_texture=1;   /* 图片路径创建的纹理由 draft 释放 */
 
-    if(!SDL_GetTextureSize(tex,&d->width,&d->height)){
+    if(!draft_texture_size(tex,w,h,&d->width,&d->height)){
         SDL_DestroyTexture(tex);
         free(d);
         return NULL;
@@ -1608,7 +1636,7 @@ static draft_texture_t *draft_create_texture_from_surface(align_t align,SDL_Surf
     return d;
 }
 
-draft_texture_t *draft_create_picture_from_memory(align_t align,const char *file,size_t size){
+draft_texture_t *draft_create_picture_from_memory(align_t align,const char *file,size_t size,float w,float h){
     if(file==NULL||size==0){
         return NULL;
     }
@@ -1617,15 +1645,15 @@ draft_texture_t *draft_create_picture_from_memory(align_t align,const char *file
         return NULL;
     }
     SDL_Surface *surface=SDL_LoadSurface_IO(io,true);
-    return draft_create_texture_from_surface(align,surface);
+    return draft_create_texture_from_surface(align,surface,w,h);
 }
 
-draft_texture_t *draft_create_picture(align_t align,const char *path){
+draft_texture_t *draft_create_picture(align_t align,const char *path,float w,float h){
     if(path==NULL){
         return NULL;
     }
     SDL_Surface *surface=SDL_LoadSurface(path);
-    return draft_create_texture_from_surface(align,surface);
+    return draft_create_texture_from_surface(align,surface,w,h);
 }
 
 /* ---- 图标 + 文字 ---- */
@@ -1879,7 +1907,9 @@ draft_texture_t *draft_create_icon_with_text(align_t align,TTF_Font *font,char *
         icon_text_free_parts(&parts);
         return NULL;
     }
-    SDL_SetTextureBlendMode(canvas,SDL_BLENDMODE_BLEND);
+    /* 图标/文字以直通 alpha 绘制到透明目标上，目标内容因此是预乘 alpha；
+     * 之后按预乘方式混合，避免文字和图标边缘出现深色描边。 */
+    SDL_SetTextureBlendMode(canvas,SDL_BLENDMODE_BLEND_PREMULTIPLIED);
     SDL_SetTextureScaleMode(canvas,SDL_SCALEMODE_NEAREST);
 
     SDL_Texture *previous=SDL_GetRenderTarget(renderer);
@@ -2310,7 +2340,10 @@ void animation_draw(void *p){
         return;
     }
 
-    if(l->status&&l->animation){
+    if((l->status||l->lasting)&&l->animation){
+        if(!l->lasting){
+            l->timer=SDL_GetTicks();
+        }
         l->animation(l);
     }
     if(l->drafts==NULL){

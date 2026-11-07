@@ -134,10 +134,9 @@ python3 tools/gen_lost_icon.py -o build/lost_icon.c \
 
 ## `gen_switch_icon.py`
 
-生成默认的开关旋钮图标：64×64 的白色抗锯齿圆，输出 `build/switch_icon.c`
-和可选的 `assets/Default/icon/switch.png`。开关控件会按主题旋钮颜色给它着色。
+生成默认的开关旋钮 PNG：64×64 的白色抗锯齿圆。该图标作为主题资源在运行时
+加载，不参与主程序构建，也不嵌入可执行文件。
 
 ```sh
-python3 tools/gen_switch_icon.py -o build/switch_icon.c \
-    --png assets/Default/icon/switch.png
+python3 tools/gen_switch_icon.py --png assets/Default/icon/knob.png
 ```

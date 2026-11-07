@@ -70,11 +70,11 @@ int main(int argc,char *argv[]){
     widget_button_t *button=widget_create_button(
         get_root_layout(),200.0f,make_align(3,3,0,0,0.0f,0.0f,0.0f,0.0f),
         _("Test Button"),test_button_callback,NULL);
-    widget_button_t *ss=widget_create_button_switch(
+    widget_switch_t *ss=widget_create_switch(
         get_root_layout(),make_align(3,3,0,0,0.0f,60.0f,0.0f,0.0f),
         NULL,NULL);
     if(button==NULL||ss==NULL){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("Failed to create test button"));
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("Failed to create test widgets"));
     }
 
     update_root();

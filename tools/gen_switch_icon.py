@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""生成默认的开关旋钮图标：白色抗锯齿圆，输出 C 数据和可选的 PNG 副本。
+"""生成默认的开关旋钮 PNG：64×64 白色抗锯齿圆。
 
-运行时由 SDL_CreateSurfaceFrom() 直接引用 C 数据；开关控件会按主题旋钮颜色
-给这个白色圆着色，所以图标本身只保留 alpha 形状。
+旋钮图标作为主题资源在运行时加载，不嵌入可执行文件。
 
 用法：
-    python3 tools/gen_switch_icon.py -o build/switch_icon.c \\
-        --png assets/Default/icon/switch.png
+    python3 tools/gen_switch_icon.py --png assets/Default/icon/knob.png
+
+调试时也可以用 -o 额外输出一份 C 数据。
 """
 
 from __future__ import annotations
@@ -110,14 +110,16 @@ def write_bytes_if_changed(path: Path, data: bytes) -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Generate the switch knob icon.")
-    parser.add_argument("-o", "--output", default="build/switch_icon.c", help="output .c path")
-    parser.add_argument("--png", help="optional .png copy, e.g. assets/Default/icon/switch.png")
+    parser.add_argument("-o", "--output", help="optional .c output path for debugging")
+    parser.add_argument("--png", help="output .png path, e.g. assets/Default/icon/knob.png")
     args = parser.parse_args(argv)
 
     pixels = build_pixels()
-    output = Path(args.output)
-    changed = write_if_changed(output, make_source(pixels))
-    print(f"{output}{' 已生成' if changed else ' 已是最新'}（{WIDTH}x{HEIGHT}）")
+
+    if args.output:
+        output = Path(args.output)
+        changed = write_if_changed(output, make_source(pixels))
+        print(f"{output}{' 已生成' if changed else ' 已是最新'}（{WIDTH}x{HEIGHT}）")
 
     if args.png:
         png_path = Path(args.png)

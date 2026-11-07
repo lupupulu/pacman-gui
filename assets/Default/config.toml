@@ -19,7 +19,7 @@
 #   color[]        调色板，颜色写成 0xRRGGBBAA
 #   text_color[]   文字颜色
 #   divider_color  分割线颜色（单个 0xRRGGBBAA；不写时用 color[1]）
-#   color[5..7]    开关：关闭轨道、打开轨道、旋钮
+#   color[5..6]    开关：关闭轨道、打开轨道
 
 version = "0.0.1"
 name = "Default"
@@ -28,10 +28,10 @@ default = "Bright"
 fonts = [ "monospace" ]
 text_size = [ 20 , 16 , 14 ]
 item_height = 32.0
-button_height = 32.0
-button_animation_time = 200
+button_height = 16.0
+button_animation_time = 100
 switch_animation_time = 120
-switch_width = 64.0
+switch_width = 32.0
 switch_icon_height = 0.0
 rect_round_corner = 10.0
 # icon_path = "icon"

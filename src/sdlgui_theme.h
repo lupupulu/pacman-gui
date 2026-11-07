@@ -20,7 +20,6 @@ typedef enum {
     COLOR_BUTTON_HIGHLIGHT,
     COLOR_SWITCH_OFF,     /* 开关关闭轨道 */
     COLOR_SWITCH_ON,      /* 开关打开轨道 */
-    COLOR_SWITCH_KNOB     /* 开关旋钮图标着色 */
 }theme_color_t;
 
 /* 文本级别：同时用作 fonts[]、text_size[]、text_color[] 的下标 */
@@ -33,7 +32,7 @@ typedef enum {
 /* 内置图标下标。其他图标通过 add_icon_rule() 动态分配。 */
 typedef enum {
     ICON_LOST=0,
-    ICON_SWITCH=1,   /* 开关旋钮 */
+    ICON_KNOB=1,   /* 开关旋钮 */
 }theme_icon_t;
 
 typedef struct {
@@ -93,7 +92,7 @@ unsigned get_divider_color(void);
 const char *get_font(theme_text_t index);   /* 返回字体族名，不是 TTF_Font */
 float get_text_size(theme_text_t index);
 /* 取图标；返回的纹理归主题所有，主题切换/退出后失效。
- * 主题没有该图标时，switch 回退到内嵌旋钮，其余回退到 lost 问号。 */
+ * 主题没有 ICON_KNOB 时返回 NULL；其余图标回退到 lost 问号。 */
 SDL_Texture *get_icon(theme_icon_t index);
 const theme_t *get_theme(void);
 const theme_slice_t *get_theme_slice(void);
@@ -104,7 +103,7 @@ const theme_slice_t *get_theme_slice(void);
 TTF_Font *obtain_font(const char *name,float ptsize);
 
 /* 只负责查找并加载图标：在 path 下找 name.png（name 已带 .png 时不重复添加）。
- * path 为 NULL 时支持内置的 "lost" 和 "switch"。返回的纹理由调用方释放。 */
+ * path 为 NULL 时只支持内置的 "lost"。返回的纹理由调用方释放。 */
 SDL_Texture *load_icon(const char *path,const char *name);
 /* 按 name 有序插入规则；index<0 时自动分配新下标。
  * name 必须匹配 [A-Za-z_][A-Za-z0-9_]*（数字不能作首字母）。
