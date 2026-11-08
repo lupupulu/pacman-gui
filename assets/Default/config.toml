@@ -30,7 +30,7 @@ name = "Default"
 description = "Default sdlgui theme."
 default = "Bright"
 fonts = [ "monospace" ]
-text_size = [ 20 , 16 , 14 ]
+text_size = [ 16 , 14 , 12 ]
 item_height = 32.0
 button_height = 16.0
 button_animation_time = 100
@@ -45,12 +45,12 @@ rect_round_corner = 10.0
 
 [Bright]
 color = [ 0xEFF1F5FF, 0xCCD0DAFF, 0x8CAAEEFF, 0xFE640BFF, 0xABC4FFFF,
-          0xCCD0DAFF, 0x8CAAEEFF, 0xCCD0DAFF, 0x8CAAEEFF ]
+          0xACB0BEFF, 0x8CAAEEFF, 0xCCD0DAFF, 0x8CAAEEFF ]
 text_color = [ 0x4C4F69FF ]
 divider_color = 0xBCC0CCFF
 
 [Dark]
 color = [ 0x1E1E2EFF, 0x313244FF, 0x1E66F5FF, 0xFAB387FF, 0x89B4FAFF,
-          0x313244FF, 0x1E66F5FF, 0x45475AFF, 0x89B4FAFF ]
+          0x585B70FF, 0x1E66F5FF, 0x45475AFF, 0x89B4FAFF ]
 text_color = [ 0xCDD6F4FF ]
 divider_color = 0x45475AFF

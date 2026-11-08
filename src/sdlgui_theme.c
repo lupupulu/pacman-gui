@@ -15,12 +15,12 @@
 /* theme_t 里的 color/text 是 unsigned *，内建主题需要各自准备静态后备数组。 */
 static unsigned builtin_bright_color[]={
     0xEFF1F5FF,0xCCD0DAFF,0x8CAAEEFF,0xFE640BFF,0xABC4FFFF,
-    0xCCD0DAFF,0x8CAAEEFF,0xCCD0DAFF,0x8CAAEEFF
+    0xACB0BEFF,0x8CAAEEFF,0xCCD0DAFF,0x8CAAEEFF
 };
 static unsigned builtin_bright_text_color[]={0x4C4F69FF};
 static unsigned builtin_dark_color[]={
     0x1E1E2EFF,0x313244FF,0x1E66F5FF,0xFAB387FF,0x89B4FAFF,
-    0x313244FF,0x1E66F5FF,0x45475AFF,0x89B4FAFF
+    0x585B70FF,0x1E66F5FF,0x45475AFF,0x89B4FAFF
 };
 static unsigned builtin_dark_text_color[]={0xCDD6F4FF};
 static unsigned builtin_text_size[]={20,16,14};
@@ -89,7 +89,10 @@ typedef struct {
 
 static const icon_pair_t icon_default_rules[]={
     {.name="lost",.index=ICON_LOST},
-    {.name="knob",.index=ICON_KNOB}
+    {.name="knob",.index=ICON_KNOB},
+    {.name="settings",.index=ICON_SETTINGS},
+    {.name="package",.index=ICON_PACKAGE},
+    {.name="installed",.index=ICON_INSTALLED}
 };
 
 static darray_t(icon_pair_t) icon_rules;
@@ -898,7 +901,7 @@ float get_text_size(theme_text_t index){
 
 /* lost 图标是占位图，统一乘上当前文字色，深色/浅色主题都能看清。
  * 主题自带的 lost.png 也走这里；其他图标保持原色。 */
-static void theme_tint_lost(SDL_Texture *texture){
+static void theme_tint_icon(SDL_Texture *texture){
     if(texture==NULL){
         return;
     }
@@ -913,8 +916,8 @@ static void theme_tint_lost(SDL_Texture *texture){
 SDL_Texture *get_icon(theme_icon_t index){
     size_t slot=(size_t)index;
     if(theme.name!=NULL&&theme.icons!=NULL&&slot<theme.icon_size&&theme.icons[slot]!=NULL){
-        if(index==ICON_LOST){
-            theme_tint_lost(theme.icons[slot]);
+        if(index!=ICON_KNOB){
+            theme_tint_icon(theme.icons[slot]);
         }
         return theme.icons[slot];
     }
@@ -927,12 +930,12 @@ SDL_Texture *get_icon(theme_icon_t index){
     /* 外部主题可能自己带了 lost.png，缺失的图标先回退到它 */
     if(theme.name!=NULL&&theme.icons!=NULL&&(size_t)ICON_LOST<theme.icon_size&&
        theme.icons[ICON_LOST]!=NULL){
-        theme_tint_lost(theme.icons[ICON_LOST]);
+        theme_tint_icon(theme.icons[ICON_LOST]);
         return theme.icons[ICON_LOST];
     }
 
     /* 内置主题，或外部主题缺少该图标：回退到编译期内嵌的问号 */
-    theme_tint_lost(builtin_lost_texture);
+    theme_tint_icon(builtin_lost_texture);
     return builtin_lost_texture;
 }
 

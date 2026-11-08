@@ -6,6 +6,8 @@
 #define WINDOW_TITLE "pacman-gui"
 #define WINDOW_W 640
 #define WINDOW_H 480
+#define WINDOW_MIN_W 400
+#define WINDOW_MIN_H 360
 
 #define TRUE 1
 #define FALSE 0
@@ -51,11 +53,10 @@ void update_mouse_wheel(const SDL_Event *ev){
     set_mouse_wheel(ev->wheel.x,ev->wheel.y);
 }
 
-static void test_button_callback(int status,void *data){
+static void selector_callback(size_t now,size_t from,void *data){
     (void)data;
-    if(status==BUTTON_STATUS_TRIGGER){
-        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,_("Test button triggered"));
-    }
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                _("Selector changed: %zu -> %zu"),from,now);
 }
 
 int main(int argc,char *argv[]){
@@ -67,14 +68,34 @@ int main(int argc,char *argv[]){
 
     sdlgui_init(WINDOW_TITLE,WINDOW_W,WINDOW_H,"assets/icon-64.png",NULL);
 
-    widget_button_t *button=widget_create_button(
-        get_root_layout(),200.0f,make_align(3,3,0,0,0.0f,0.0f,0.0f,0.0f),
-        _("Test Button"),test_button_callback,NULL);
-    widget_switch_t *ss=widget_create_switch(
-        get_root_layout(),make_align(3,3,0,0,0.0f,60.0f,0.0f,0.0f),
-        NULL,NULL);
-    if(button==NULL||ss==NULL){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("Failed to create test widgets"));
+    SDL_Window *window=get_window();
+    if(window==NULL||!SDL_SetWindowMinimumSize(window,WINDOW_MIN_W,WINDOW_MIN_H)){
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    _("Failed to set minimum window size: %s"),SDL_GetError());
+    }
+
+    update_root();
+
+    /* 顶部工具栏：铺满窗口宽度的矩形，选择器在其中居中 */
+    layout_rect_t *top_bar=create_layout_rect(
+        get_root_layout(),0.0f,64.0f,make_align(0,0,1,0,0.0f,0.0f,1.0f,0.0f));
+    if(top_bar!=NULL){
+        top_bar->color=get_color(COLOR_SECONDARY);
+    }
+    update_root();
+
+    widget_selector_t *selector=widget_create_selector_title(
+        top_bar!=NULL?(void *)top_bar:get_root_layout(),
+        make_align(3,3,0,0,0.0f,0.0f,0.0f,0.0f),
+        125.0f,
+        selector_callback,
+        NULL,
+        "\\package package",
+        "\\installed installed",
+        "\\settings settings",
+        NULL);
+    if(top_bar==NULL||selector==NULL){
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("Failed to create top bar or selector"));
     }
 
     update_root();

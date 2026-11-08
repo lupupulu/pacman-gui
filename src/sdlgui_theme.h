@@ -34,7 +34,10 @@ typedef enum {
 /* 内置图标下标。其他图标通过 add_icon_rule() 动态分配。 */
 typedef enum {
     ICON_LOST=0,
-    ICON_KNOB=1,   /* 开关旋钮 */
+    ICON_KNOB,        /* 开关旋钮 */
+    ICON_SETTINGS,    /* 设置 */
+    ICON_PACKAGE,     /* 安装包 */
+    ICON_INSTALLED,   /* 已安装 */
 }theme_icon_t;
 
 typedef struct {

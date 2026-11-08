@@ -105,14 +105,18 @@ src/sdlgui.h
 src/sdlgui_theme.c   主题、配色、字体缓存与 TOML 配置
 src/sdlgui_theme.h
 src/sdlgui_fontlookup.c/.h   字体族名 -> 字体文件（macOS CoreText / Linux fontconfig）
-src/sdlgui_widget.c/.h   按钮与开关控件
+src/sdlgui_widget.c/.h   按钮、开关、选择器与滑块控件
 src/CDS/       单头文件配置/TOML 解析库
 packaging/macos/Info.plist   macOS 应用包信息
 build/pacman_pixel_font.c    构建时生成的嵌入字体源（已被 .gitignore 忽略）
 build/lost_icon.c            构建时生成的内置 lost 图标源（已被 .gitignore 忽略）
 assets/theme.toml            主题名映射（theme 参数 -> 主题目录名）
-assets/Default/icon/lost.png 默认主题自带的 lost 图标（由 gen_lost_icon.py 生成）
-assets/Default/icon/knob.png 默认主题自带的开关旋钮图标（运行时加载，不嵌入）
+assets/Default/icon/*.svg     默认主题图标源文件
+assets/Default/icon/lost.png  默认主题自带的 lost 图标（由 gen_lost_icon.py 生成）
+assets/Default/icon/knob.png  默认主题自带的开关旋钮图标（运行时加载，不嵌入）
+assets/Default/icon/package.png 安装包图标
+assets/Default/icon/installed.png 已安装图标
+assets/Default/icon/settings.png 设置图标
 tools/         字体、图标、icns 与编译数据库生成脚本
 assets/        主题、字体、图标
 build/         构建产物（已被 .gitignore 忽略）
@@ -181,17 +185,23 @@ build/         构建产物（已被 .gitignore 忽略）
 开关只绘制轨道，不会回退到内嵌图片或色块。
 
 同一张图也生成了一份 PNG 副本放在 `assets/Default/icon/lost.png`，所以默认主题
-会直接读取这个文件。`get_icon()` 对所有 lost 图标（内置的、主题自带的）都会按
-当前 `TEXT_CONTEXT` 的文字颜色着色，因此 Bright/Dark 两种配色下都能看清；
-其他图标保持原色。外部主题缺少某个图标时，会优先回退到主题自己的
-`icon/lost.png`，没有才使用内置问号。
+会直接读取这个文件。除 `ICON_KNOB` 外，`get_icon()` 会按当前 `TEXT_CONTEXT`
+的文字颜色给图标着色，因此 Bright/Dark 两种配色下都能看清。外部主题缺少某个
+图标时，会优先回退到主题自己的 `icon/lost.png`，没有才使用内置问号。默认主题
+提供的图标规则包括 `lost`、`knob`、`package`、`installed` 和 `settings`。
 
-需要重新生成 lost 图标或开关旋钮 PNG 时：
+默认主题图标的源文件是 `assets/Default/icon/*.svg`，运行时读取同名 64×64 PNG。
+修改 SVG 后重新渲染：
+
+```sh
+sh tools/render_icons.sh
+```
+
+重新生成内置 lost 图标时：
 
 ```sh
 python3 tools/gen_lost_icon.py -o build/lost_icon.c \
     --png assets/Default/icon/lost.png
-python3 tools/gen_switch_icon.py --png assets/Default/icon/knob.png
 ```
 
 ### 图标 + 文字
@@ -251,6 +261,37 @@ int on = widget_switch_get(sw);
 按原图颜色绘制，不再按颜色字段着色。图标默认铺满开关高度，因此圆形边缘与
 开关上下外沿对齐；主题没有提供该图标时只绘制轨道，不回退到色块。
 旋钮位置由主题根层的 `switch_animation_time` 控制动画（默认 120 ms）。
+
+## 选择器控件
+
+选择器是类似苹果顶栏/底栏的分段切换按钮：一条轨道上排列若干项，选中项用
+滑块背景标出，点击后滑块平滑移动。轨道和选中滑块复用开关颜色：
+
+```c
+static void on_select(size_t now,size_t from,void *data){
+    printf("select %zu (from %zu)\n",now,from);
+}
+
+widget_selector_t *selector = widget_create_selector(
+    get_root_layout(),
+    make_align(3,0,0,0,0.0f,40.0f,0,0),
+    140.0f,                              // 每项宽度
+    on_select,
+    NULL,
+    "\\lost Home",
+    "\\knob Settings",
+    "\\lost Profile",
+    NULL                                 // 可变参数以 NULL 结尾
+);
+```
+
+- 文字全部使用 `draft_create_icon_with_text()` 渲染，因此支持 `\icon` 标记。
+- 轨道颜色为 `COLOR_SWITCH_OFF`，选中滑块为 `COLOR_SWITCH_ON`。
+- 点击后 `callback(now,from,data)`，`now` 是当前项下标，`from` 是原下标。
+- 滑动动画时长取主题根层 `switch_animation_time`。
+- 高度取 `button_height`，并保证至少容纳一行字体；`controllable=0` 时忽略点击。
+- `widget_create_selector_title()` 参数相同，但文字使用 `TEXT_TITLE`，高度取标题
+  行高（至少 `button_height`），适合顶栏/底栏的大号选择器。
 
 ## 滑块控件
 

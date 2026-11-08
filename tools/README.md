@@ -121,22 +121,29 @@ make compdb
 python3 tools/gen_lost_icon.py -o build/lost_icon.c
 ```
 
-加 `--png` 可以同时输出默认主题用的 PNG 副本（这个文件是签入仓库的，
-`make` 不会自动改写 `assets/`）：
-
-```sh
-python3 tools/gen_lost_icon.py -o build/lost_icon.c \
-    --png assets/Default/icon/lost.png
-```
+加 `--png` 可以同时输出一份 PNG 副本；默认主题现在以
+`assets/Default/icon/lost.svg` 为源、通过 `render_icons.sh` 生成 PNG，
+一般不需要再用这个参数覆盖它。
 
 生成的数据由 `src/sdlgui_theme.c` 通过 `SDL_CreateSurfaceFrom()` 直接使用，
-运行时不需要外部图标文件；PNG 副本则被默认主题通过 `icon_path` 正常加载。
+运行时不需要外部图标文件。
 
 ## `gen_switch_icon.py`
 
-生成默认的开关旋钮 PNG：64×64 的白色抗锯齿圆。该图标作为主题资源在运行时
-加载，不参与主程序构建，也不嵌入可执行文件。
+旧脚本：生成一个独立的 64×64 白色抗锯齿圆 PNG。默认主题的旋钮现在以
+`assets/Default/icon/knob.svg` 为源，由 `render_icons.sh` 渲染。
 
 ```sh
-python3 tools/gen_switch_icon.py --png assets/Default/icon/knob.png
+python3 tools/gen_switch_icon.py --png /tmp/knob.png
 ```
+
+## `render_icons.sh`
+
+默认主题图标以 `assets/Default/icon/*.svg` 为源文件，运行时使用同名 64×64 PNG。
+修改 SVG 后重新渲染：
+
+```sh
+sh tools/render_icons.sh
+```
+
+需要 `rsvg-convert`（librsvg）。SVG 源文件必须保留在仓库中。

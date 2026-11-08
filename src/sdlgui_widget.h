@@ -30,6 +30,32 @@ widget_switch_t *widget_create_switch(void *parent,align_t align,switch_callback
 void widget_switch_set(widget_switch_t *sw,int on);
 
 
+typedef void (*selector_callback_func)(size_t now,size_t from,void *data);
+typedef struct {
+    layout_list_t l;
+    size_t now_button;
+    int controllable:1;   /* 0 时忽略鼠标点击 */
+    selector_callback_func callback;
+    void *data;
+
+    /* 内部状态 */
+    size_t item_count;
+    float item_width;
+    float from_x;
+    float to_x;
+    unsigned last_left:1;
+}widget_selector_t;
+
+/* 可变参数部分是若干按钮文字，以 NULL 结尾；每项宽度不超过 item_width。
+ * 文字支持 draft_create_icon_with_text() 的 \icon 标记。
+ * 点击切换后 callback(now,from,data)，动画时长取 switch_animation_time。 */
+widget_selector_t *widget_create_selector(void *parent,align_t align,float item_width,
+    selector_callback_func callback,void *data,...);
+/* 大号选择器：文字使用 TEXT_TITLE，高度取标题行高（至少 button_height）。 */
+widget_selector_t *widget_create_selector_title(void *parent,align_t align,float item_width,
+    selector_callback_func callback,void *data,...);
+
+
 /* offset 是内容滚动偏移（逻辑像素），不是相对增量 */
 typedef void (*slider_callback_func)(float offset,void *data);
 typedef struct {

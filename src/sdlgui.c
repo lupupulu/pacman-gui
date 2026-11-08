@@ -1975,6 +1975,8 @@ draft_texture_t *draft_create_icon_with_text(align_t align,TTF_Font *font,char *
             SDL_Texture *tex=SDL_CreateTextureFromSurface(renderer,part->surface);
             if(tex!=NULL){
                 SDL_SetTextureBlendMode(tex,SDL_BLENDMODE_BLEND);
+                /* 文字段按原始像素 1:1 画进合成纹理，不参与线性缩放 */
+                SDL_SetTextureScaleMode(tex,SDL_SCALEMODE_NEAREST);
                 SDL_FRect dst={
                     .x=x,
                     .y=((float)target_height-(float)part->surface->h)*0.5f,
@@ -2022,7 +2024,17 @@ void draft_draw_texture(void *p){
     if(w<=0.0f||h<=0.0f){
         SDL_GetTextureSize(d->tex,&w,&h);
     }
-    SDL_FRect dst={.x=d->x,.y=d->y,.w=w,.h=h};
+
+    /* 纹理按物理像素对齐，避免 0.5px 的居中偏移把文字采样糊 */
+    float scale=sdlgui_get_scale();
+    if(scale<=0.0f){
+        scale=1.0f;
+    }
+    float x=SDL_roundf(d->x*scale)/scale;
+    float y=SDL_roundf(d->y*scale)/scale;
+    w=SDL_roundf(w*scale)/scale;
+    h=SDL_roundf(h*scale)/scale;
+    SDL_FRect dst={.x=x,.y=y,.w=w,.h=h};
     SDL_RenderTexture(renderer,d->tex,NULL,&dst);
 }
 
