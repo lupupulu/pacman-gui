@@ -24,10 +24,14 @@ typedef struct SDL_Window SDL_Window;
 
 typedef struct layout_t layout_t;   /* get_root() 等在定义之前就要用到 */
 
-/* theme: 主题名。在 SDLGUI_THEME_PATH 中查找 <theme>/config.toml；
- * theme 为 NULL/空串，或指定主题不存在时，回退 Default/config.toml；
+/* theme: 主题名。先在主题搜索路径的 theme.toml 中查同名键，命中时用其值作为
+ * 实际主题名；theme 为 NULL/空串时用 "Default" 作为键。
+ * 然后查找 <主题名>/config.toml，找不到再回退 Default/config.toml，
  * 仍然找不到则使用内置主题。 */
 void sdlgui_init(const char *title,int width,int height,const char *iconpath,const char *theme);
+/* 独立的主题加载入口：theme.toml 映射 -> 加载主题配置 -> 系统亮/暗选择。
+ * 由 sdlgui_init() 调用；也可在 theme_init() 之后单独调用。 */
+void sdlgui_theme_init(const char *theme);
 void sdlgui_quit(void);
 
 void set_window(SDL_Window *w);
@@ -376,5 +380,8 @@ void list_mouse(void *l);
 /* 按逻辑像素滑动列表：off>0 向内容末尾（下/右）移动。
  * can_be_slided=0 时不生效；越界会夹到有效范围。 */
 void list_slide(layout_list_t *l,float off);
+/* 读取/设置列表的绝对滚动偏移，供滑块控件同步。 */
+float list_get_slide(const layout_list_t *l);
+void list_set_slide(layout_list_t *l,float offset);
 
 #endif

@@ -15,12 +15,12 @@
 /* theme_t 里的 color/text 是 unsigned *，内建主题需要各自准备静态后备数组。 */
 static unsigned builtin_bright_color[]={
     0xEFF1F5FF,0xCCD0DAFF,0x8CAAEEFF,0xFE640BFF,0xABC4FFFF,
-    0xCCD0DAFF,0x8CAAEEFF,0x4C4F69FF
+    0xCCD0DAFF,0x8CAAEEFF,0xCCD0DAFF,0x8CAAEEFF
 };
 static unsigned builtin_bright_text_color[]={0x4C4F69FF};
 static unsigned builtin_dark_color[]={
     0x1E1E2EFF,0x313244FF,0x1E66F5FF,0xFAB387FF,0x89B4FAFF,
-    0x313244FF,0x1E66F5FF,0xCDD6F4FF
+    0x313244FF,0x1E66F5FF,0x45475AFF,0x89B4FAFF
 };
 static unsigned builtin_dark_text_color[]={0xCDD6F4FF};
 static unsigned builtin_text_size[]={20,16,14};
@@ -34,7 +34,7 @@ static theme_slice_t builtin_theme_slice[]={
     {
         .name="Bright",
         .color=builtin_bright_color,
-        .color_size=8,
+        .color_size=9,
         .text_color=builtin_bright_text_color,
         .text_color_size=1,
         .divider_color=0xBCC0CCFF
@@ -42,7 +42,7 @@ static theme_slice_t builtin_theme_slice[]={
     {
         .name="Dark",
         .color=builtin_dark_color,
-        .color_size=8,
+        .color_size=9,
         .text_color=builtin_dark_text_color,
         .text_color_size=1,
         .divider_color=0x45475AFF
@@ -67,6 +67,9 @@ static theme_t theme={
     .switch_width=64.0f,
     .switch_icon_height=0.0f,
     .rect_round_corner=10.0f,
+    .slider_animation_time=200,
+    .slider_width=8.0f,
+    .slider_least_height=24.0f,
 
     .slices=builtin_theme_slice,
     .slice_size=2
@@ -249,6 +252,9 @@ static void theme_reset_builtin(void){
     theme.switch_width=64.0f;
     theme.switch_icon_height=0.0f;
     theme.rect_round_corner=10.0f;
+    theme.slider_animation_time=200;
+    theme.slider_width=8.0f;
+    theme.slider_least_height=24.0f;
     theme.slices=builtin_theme_slice;
     theme.slice_size=2;
     theme.icon_path=NULL;
@@ -484,6 +490,9 @@ void theme_set(const char *path,const char *file){
     tmp.switch_width=64.0f;
     tmp.switch_icon_height=0.0f;
     tmp.rect_round_corner=10.0f;
+    tmp.slider_animation_time=200;
+    tmp.slider_width=8.0f;
+    tmp.slider_least_height=24.0f;
 
     toml_type_t *tp=NULL;
 
@@ -689,6 +698,33 @@ void theme_set(const char *path,const char *file){
             goto fail;
         }
         tmp.rect_round_corner=(float)v;
+    }
+    tp=toml_lookup(&t,"",0,"slider_animation_time");
+    if(tp!=NULL){
+        double v=0.0;
+        if(!theme_read_number(tp,&v)||!isfinite(v)||v<=0.0){
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("theme_set: slider_animation_time must be positive"));
+            goto fail;
+        }
+        tmp.slider_animation_time=(unsigned long)v;
+    }
+    tp=toml_lookup(&t,"",0,"slider_width");
+    if(tp!=NULL){
+        double v=0.0;
+        if(!theme_read_number(tp,&v)||!isfinite(v)||v<=0.0){
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("theme_set: slider_width must be positive"));
+            goto fail;
+        }
+        tmp.slider_width=(float)v;
+    }
+    tp=toml_lookup(&t,"",0,"slider_least_height");
+    if(tp!=NULL){
+        double v=0.0;
+        if(!theme_read_number(tp,&v)||!isfinite(v)||v<0.0){
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("theme_set: slider_least_height must be non-negative"));
+            goto fail;
+        }
+        tmp.slider_least_height=(float)v;
     }
 
     /* 7. 根下每个非空名字的表都是一套配色切片 */

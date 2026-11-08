@@ -185,7 +185,7 @@ widget_button_t *widget_create_button(void *parent,float width,align_t align,con
 
     layout_animation_t *animation=create_layout_animation(widget,button_animation,
         draft_create_rrect(full,width,height,get_theme()->rect_round_corner,get_color(COLOR_BUTTON),get_color(COLOR_BUTTON)),
-        draft_create_text(
+        draft_create_icon_with_text(
             make_align(3,3,0,0,0.0f,0.0f,0.0f,0.0f),
             obtain_font(get_font(TEXT_CONTEXT),
             get_text_size(TEXT_CONTEXT)),
@@ -359,7 +359,7 @@ static void switch_animation(void *a){
 /* layout_button 只上报按钮状态，这里翻译成开关切换 */
 static void switch_button_callback(int status,void *data){
     widget_switch_t *sw=data;
-    if(sw==NULL||status!=BUTTON_STATUS_TRIGGER){
+    if(sw==NULL||!sw->controllable||status!=BUTTON_STATUS_TRIGGER){
         return;
     }
 
@@ -453,12 +453,6 @@ widget_switch_t *widget_create_switch(void *parent,align_t align,switch_callback
     return sw;
 }
 
-int widget_switch_get(const widget_switch_t *sw){
-    if(sw==NULL){
-        return 0;
-    }
-    return sw->on?1:0;
-}
 
 void widget_switch_set(widget_switch_t *sw,int on){
     if(sw==NULL){
@@ -478,4 +472,282 @@ void widget_switch_set(widget_switch_t *sw,int on){
         animation->lasting=1;
     }
     switch_update(sw);
+}
+
+
+static void slider_update(void *p);
+static void slider_draw(void *p);
+static void slider_mouse(void *p);
+static void slider_clear(void *p);
+
+static float slider_view_size(const widget_slider_t *slider){
+    return slider->direction?slider->l.width:slider->l.height;
+}
+
+static float slider_content_size(const widget_slider_t *slider){
+    float view=slider_view_size(slider);
+    return slider->all_height>view?slider->all_height:view;
+}
+
+static int slider_can_scroll(const widget_slider_t *slider){
+    return slider->all_height>slider_view_size(slider);
+}
+
+static float slider_thumb_size(const widget_slider_t *slider){
+    float view=slider_view_size(slider);
+    float content=slider_content_size(slider);
+    if(view<=0.0f){
+        return 0.0f;
+    }
+    if(content<=view){
+        return view;
+    }
+
+    float thumb=view*view/content;
+    if(thumb<slider->least_height){
+        thumb=slider->least_height;
+    }
+    return thumb>view?view:thumb;
+}
+
+static float slider_max_offset(const widget_slider_t *slider){
+    float view=slider_view_size(slider);
+    float content=slider_content_size(slider);
+    return content>view?content-view:0.0f;
+}
+
+static void slider_clamp_offset(widget_slider_t *slider){
+    float max=slider_max_offset(slider);
+    if(slider->offset<0.0f){
+        slider->offset=0.0f;
+    }else if(slider->offset>max){
+        slider->offset=max;
+    }
+}
+
+/* 使用 color_gradient 从当前滑块色渐变到全透明；返回 0 表示完全透明。 */
+static unsigned slider_color(widget_slider_t *slider){
+    unsigned base=get_color(slider->dragging?COLOR_SLIDER_HIGHLIGHT:COLOR_SLIDER);
+    if(slider->lasting_time==0){
+        return base;
+    }
+
+    unsigned long now=SDL_GetTicks();
+    if(now-slider->active_time<=slider->lasting_time){
+        return base;
+    }
+
+    unsigned long elapsed=now-slider->active_time-slider->lasting_time;
+    return color_gradient(0,base,elapsed,slider->slider_animation_time);
+}
+
+static void slider_update(void *p){
+    widget_slider_t *slider=p;
+    if(slider==NULL){
+        return;
+    }
+
+    layout_update(&slider->l);
+    if(slider->slider==NULL){
+        return;
+    }
+
+    if(!slider_can_scroll(slider)){
+        slider->offset=0.0f;
+        slider->dragging=0;
+        slider->active_time=SDL_GetTicks();
+        slider->slider->color=0;
+        return;
+    }
+
+    float view=slider_view_size(slider);
+    float thumb=slider_thumb_size(slider);
+    float max_offset=slider_max_offset(slider);
+    slider_clamp_offset(slider);
+
+    float mouse_x=get_mouse_x();
+    float mouse_y=get_mouse_y();
+    int inside=mouse_x>=slider->l.x&&mouse_x<=slider->l.x+slider->l.width
+            && mouse_y>=slider->l.y&&mouse_y<=slider->l.y+slider->l.height;
+    if(slider->dragging||inside){
+        slider->active_time=SDL_GetTicks();
+    }
+
+    unsigned color=slider_color(slider);
+    if((color&0xFF)==0){
+        slider->slider->color=0;
+        return;
+    }
+
+    float travel=view-thumb;
+    float position=max_offset>0.0f?slider->offset/max_offset*travel:0.0f;
+
+    if(slider->direction){
+        slider->slider->x=slider->l.x+position;
+        slider->slider->y=slider->l.y;
+        slider->slider->width=thumb;
+        slider->slider->height=slider->l.height;
+    }else{
+        slider->slider->x=slider->l.x;
+        slider->slider->y=slider->l.y+position;
+        slider->slider->width=slider->l.width;
+        slider->slider->height=thumb;
+    }
+
+    float r=get_theme()->rect_round_corner;
+    float limit=(slider->slider->width<slider->slider->height
+                ?slider->slider->width:slider->slider->height)/2.0f;
+    if(r>limit){
+        r=limit;
+    }
+    slider->slider->r=r;
+    slider->slider->auto_radius=0;
+    slider->slider->color=color;
+    slider->slider->border_color=0;
+}
+
+static void slider_draw(void *p){
+    widget_slider_t *slider=p;
+    if(slider==NULL||slider->slider==NULL||(slider->slider->color&0xFF)==0){
+        return;
+    }
+    draft_draw_rrect(slider->slider);
+}
+
+static void slider_clear(void *p){
+    widget_slider_t *slider=p;
+    if(slider==NULL){
+        return;
+    }
+    free(slider->slider);
+    slider->slider=NULL;
+}
+
+void widget_slider_set(widget_slider_t *slider,float offset){
+    if(slider==NULL){
+        return;
+    }
+    slider->offset=offset;
+    slider_clamp_offset(slider);
+    slider_update(slider);
+}
+
+float widget_slider_get(const widget_slider_t *slider){
+    return slider!=NULL?slider->offset:0.0f;
+}
+
+widget_slider_t *create_layout_slider(void *parent,align_t align,align_t slider_align,
+    float all_height,int direction,slider_callback_func callback,void *data){
+    (void)slider_align;
+
+    layout_t *p=parent!=NULL?parent:get_root_layout();
+    float thickness=get_theme()->slider_width;
+    if(thickness<=0.0f){
+        thickness=8.0f;
+    }
+
+    float width=direction?p->width:thickness;
+    float height=direction?thickness:p->height;
+
+    widget_slider_t *slider=create_layout(
+        sizeof(widget_slider_t),
+        p,
+        width,
+        height,
+        slider_draw,
+        slider_update,
+        slider_clear,
+        slider_mouse,
+        align
+    );
+    if(slider==NULL){
+        return NULL;
+    }
+
+    slider->all_height=all_height;
+    slider->least_height=get_theme()->slider_least_height;
+    slider->slider_animation_time=get_theme()->slider_animation_time;
+    slider->lasting_time=0;
+    slider->offset=0.0f;
+    slider->direction=direction?1u:0u;
+    slider->active_time=SDL_GetTicks();
+    slider->dragging=0;
+    slider->last_left=0;
+    slider->callback=callback;
+    slider->data=data;
+
+    float thumb=slider_thumb_size(slider);
+    align_t draft_align=make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f);
+    slider->slider=draft_create_rrect(
+        draft_align,
+        direction?thumb:thickness,
+        direction?thickness:thumb,
+        get_theme()->rect_round_corner,
+        get_color(COLOR_SLIDER),
+        0
+    );
+    if(slider->slider==NULL){
+        delete_layout((layout_t *)slider);
+        return NULL;
+    }
+
+    slider_update(slider);
+    return slider;
+}
+
+void slider_mouse(void *p){
+    widget_slider_t *slider=p;
+    if(slider==NULL){
+        return;
+    }
+
+    int pressed=get_mouse_left();
+    if(!slider_can_scroll(slider)){
+        slider->dragging=0;
+        slider->last_left=pressed?1u:0u;
+        return;
+    }
+
+    float mouse_x=get_mouse_x();
+    float mouse_y=get_mouse_y();
+    int inside=mouse_x>=slider->l.x&&mouse_x<=slider->l.x+slider->l.width
+            && mouse_y>=slider->l.y&&mouse_y<=slider->l.y+slider->l.height;
+
+    if(pressed&&!slider->last_left&&inside){
+        slider->dragging=1;
+        slider->active_time=SDL_GetTicks();
+    }
+
+    if(slider->dragging&&pressed){
+        float view=slider_view_size(slider);
+        float thumb=slider_thumb_size(slider);
+        float max_offset=slider_max_offset(slider);
+        float travel=view-thumb;
+        float axis=slider->direction?mouse_x:mouse_y;
+        float start=slider->direction?slider->l.x:slider->l.y;
+        float offset=0.0f;
+        if(travel>0.0f&&max_offset>0.0f){
+            float local=axis-start-thumb/2.0f;
+            offset=local/travel*max_offset;
+        }
+        if(offset<0.0f){
+            offset=0.0f;
+        }else if(offset>max_offset){
+            offset=max_offset;
+        }
+
+        if(offset!=slider->offset){
+            slider->offset=offset;
+            slider->active_time=SDL_GetTicks();
+            slider_update(slider);
+            if(slider->callback!=NULL){
+                slider->callback(slider->offset,slider->data);
+            }
+        }
+    }
+
+    if(!pressed){
+        slider->dragging=0;
+    }
+    slider->last_left=pressed?1u:0u;
 }

@@ -110,6 +110,7 @@ src/CDS/       单头文件配置/TOML 解析库
 packaging/macos/Info.plist   macOS 应用包信息
 build/pacman_pixel_font.c    构建时生成的嵌入字体源（已被 .gitignore 忽略）
 build/lost_icon.c            构建时生成的内置 lost 图标源（已被 .gitignore 忽略）
+assets/theme.toml            主题名映射（theme 参数 -> 主题目录名）
 assets/Default/icon/lost.png 默认主题自带的 lost 图标（由 gen_lost_icon.py 生成）
 assets/Default/icon/knob.png 默认主题自带的开关旋钮图标（运行时加载，不嵌入）
 tools/         字体、图标、icns 与编译数据库生成脚本
@@ -251,11 +252,63 @@ int on = widget_switch_get(sw);
 开关上下外沿对齐；主题没有提供该图标时只绘制轨道，不回退到色块。
 旋钮位置由主题根层的 `switch_animation_time` 控制动画（默认 120 ms）。
 
+## 滑块控件
+
+滑块用于长列表的垂直滚动。滑块高度由“视口高度 / 内容总高度”比例决定，
+并受 `slider_least_height` 限制；拖动时回调收到**绝对滚动偏移**，可直接交给
+`list_set_slide()`：
+
+```c
+#include "sdlgui_widget.h"
+
+static void on_slide(float offset,void *data){
+    list_set_slide((layout_list_t *)data,offset);
+}
+
+layout_list_t *list = create_layout_list(...);
+widget_slider_t *slider = create_layout_slider(
+    get_root_layout(),
+    make_align(1,3,0,1,-get_theme()->slider_width,0.0f,0.0f,1.0f), // 父布局右侧
+    make_align(0,0,0,0,0,0,0,0),
+    list_content_height,                  // 内容总长度
+    0,                                    // 0=竖向，1=横向
+    on_slide,
+    list
+);
+
+// 滚轮/代码滚动列表后，把滑块位置同步过去
+widget_slider_set(slider,list_get_slide(list));
+```
+
+- 滑块厚度取主题根层 `slider_width`；竖向时占父布局高度，横向时占父布局宽度。
+- `all_height` 大于当前视口长度时才显示并响应鼠标；内容不足时自动隐藏且不触发回调。
+- `lasting_time` 为鼠标停止操作后保持显示的毫秒数，`0` 表示始终显示；
+  超过该时间后使用 `color_gradient()` 从滑块颜色渐变到全透明，时长由
+  `slider_animation_time` 控制。
+- 颜色取主题 `color[]`：
+  - `COLOR_SLIDER`：普通
+  - `COLOR_SLIDER_HIGHLIGHT`：拖动时
+
 ## 主题与资源搜索路径
 
-`sdlgui_init(..., theme_name)` 查找 `<theme_name>/config.toml`；找不到指定主题时
-再查 `Default/config.toml`，仍找不到则使用内置主题。`theme_name` 为
-`NULL`/空串时等同于 `Default`。
+`sdlgui_init(..., theme_name)` 先读取主题搜索路径中的 `theme.toml`：
+
+- `theme_name` 非空时，用 `theme_name` 查同名键；
+- `theme_name` 为 `NULL`/空串时，用 `Default` 查键；
+- 命中时，用键对应的值作为实际主题名；
+- 没有 `theme.toml`、没有对应键或值无效时，直接使用 `theme_name`（NULL/空串时为 `Default`）。
+
+之后按实际主题名查找 `<主题名>/config.toml`；找不到时再查
+`Default/config.toml`，仍找不到则使用内置主题。主题加载逻辑独立在
+`sdlgui_theme_init()` 中，由 `sdlgui_init()` 调用。
+
+例如仓库里的 `assets/theme.toml`：
+
+```toml
+Default = "Default"
+```
+
+也可以把某个别名映射到其他主题目录，例如 `Foo = "Default"`。
 
 未设置 `SDLGUI_THEME_PATH` 时，搜索路径依次是：
 

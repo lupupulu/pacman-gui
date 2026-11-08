@@ -257,27 +257,53 @@ static char *build_theme_search_path(void){
     return list;
 }
 
-/* 主题是主题名；找不到指定主题时回退 Default，再回退内置主题 */
-static void load_theme_by_name(const char *theme){
-    const char *theme_path=getenv("SDLGUI_THEME_PATH");
-    char *owned=NULL;
+/* 主题搜索路径：SDLGUI_THEME_PATH 完全覆盖，否则用内建列表。 */
+static const char *theme_search_path(char **owned){
+    *owned=NULL;
+    const char *path=getenv("SDLGUI_THEME_PATH");
+    if(path==NULL||path[0]=='\0'){
+        *owned=build_theme_search_path();
+        path=*owned!=NULL?*owned:SDLGUI_THEME_PATH;
+    }
+    return path;
+}
 
-    if(theme_path==NULL||theme_path[0]=='\0'){
-        owned=build_theme_search_path();
-        if(owned!=NULL){
-            theme_path=owned;
-        }else{
-            theme_path=SDLGUI_THEME_PATH;
-        }
+/* theme.toml 里保存 theme 名到实际主题目录名的映射。 */
+static char *theme_map_lookup(const char *theme_path,const char *key){
+    char *file=confc_find_path(theme_path,"theme.toml");
+    if(file==NULL){
+        return NULL;
     }
 
-    const char *name=(theme!=NULL&&theme[0]!='\0')?theme:"Default";
+    char *name=NULL;
+    toml_t t=toml_load(file);
+    if(t.size>0){
+        toml_type_t *tp=toml_lookup(&t,"",0,key);
+        if(tp!=NULL&&*tp==TOML_STRING){
+            const char *value=((toml_string_t *)tp)->str;
+            if(value!=NULL&&value[0]!='\0'){
+                name=gui_strdup(value);
+            }
+        }
+    }
+    toml_unload(&t);
+    free(file);
+    return name;
+}
+
+/* 根据 theme.toml 把传入值换算成主题名；NULL/空串从 Default 键开始。 */
+static char *resolve_theme_name(const char *theme_path,const char *theme){
+    const char *key=(theme!=NULL&&theme[0]!='\0')?theme:"Default";
+    char *mapped=theme_map_lookup(theme_path,key);
+    return mapped!=NULL?mapped:gui_strdup(key);
+}
+
+static void load_theme_config(const char *theme_path,const char *name){
     char *found=find_theme_config(theme_path,name);
     if(found==NULL&&strcmp(name,"Default")!=0){
         found=find_theme_config(theme_path,"Default");
     }
     if(found==NULL){
-        free(owned);
         return;   /* 保持内置主题 */
     }
 
@@ -287,7 +313,22 @@ static void load_theme_by_name(const char *theme){
         theme_set(".",found);
     }
     free(found);
+}
+
+/* 独立的主题加载：先查 theme.toml 映射，再按主题名加载配置并选择系统亮/暗。 */
+void sdlgui_theme_init(const char *theme){
+    char *owned=NULL;
+    const char *theme_path=theme_search_path(&owned);
+
+    char *name=resolve_theme_name(theme_path,theme);
+    if(name!=NULL){
+        load_theme_config(theme_path,name);
+        free(name);
+    }
     free(owned);
+
+    /* 内置主题也跟随系统亮/暗；加载主题后 theme_set() 会再应用一次 */
+    theme_select_system();
 }
 
 /* 找资源文件：先按当前目录/绝对路径找，再找可执行文件旁边和上一级。
@@ -369,11 +410,8 @@ void sdlgui_init(const char *title,int width,int height,const char *iconpath,con
         exit(1);
     }
 
-    /* theme 是主题名：先查指定主题，再查 Default，最后保持内置主题 */
-    load_theme_by_name(theme);
-
-    /* 内置主题也跟随系统亮/暗；加载主题后 theme_set() 会再应用一次 */
-    theme_select_system();
+    /* 独立的主题加载：theme.toml 映射 + 配置加载 + 系统亮/暗选择 */
+    sdlgui_theme_init(theme);
 
     ui_scale_locked=1;
 
@@ -2654,6 +2692,20 @@ void list_slide(layout_list_t *l,float off){
         return;
     }
     list_clamp_scroll(l,list_scroll_offset(l)+off);
+}
+
+float list_get_slide(const layout_list_t *l){
+    if(l==NULL||!l->can_be_slided){
+        return 0.0f;
+    }
+    return list_scroll_offset(l);
+}
+
+void list_set_slide(layout_list_t *l,float offset){
+    if(l==NULL||!l->can_be_slided){
+        return;
+    }
+    list_clamp_scroll(l,offset);
 }
 
 void list_update(void *p){

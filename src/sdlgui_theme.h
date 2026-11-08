@@ -20,6 +20,8 @@ typedef enum {
     COLOR_BUTTON_HIGHLIGHT,
     COLOR_SWITCH_OFF,     /* 开关关闭轨道 */
     COLOR_SWITCH_ON,      /* 开关打开轨道 */
+    COLOR_SLIDER,
+    COLOR_SLIDER_HIGHLIGHT
 }theme_color_t;
 
 /* 文本级别：同时用作 fonts[]、text_size[]、text_color[] 的下标 */
@@ -60,13 +62,21 @@ typedef struct {
     SDL_Texture **icons;
     size_t icon_size;
 
+
+
     float item_height;
+    float rect_round_corner;
+
     unsigned long button_animation_time;
-    unsigned long switch_animation_time;
     float button_height;
+
+    unsigned long switch_animation_time;
     float switch_width;      /* 开关总长 */
     float switch_icon_height;  /* 开关旋钮图标边长；0 表示跟随开关高度 */
-    float rect_round_corner;
+
+    unsigned long slider_animation_time;
+    float slider_width;
+    float slider_least_height;
 
     theme_slice_t *slices;
     size_t slice_size;

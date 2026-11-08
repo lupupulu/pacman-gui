@@ -65,7 +65,7 @@ int main(int argc,char *argv[]){
     /* 应用名/版本/标识符；macOS 的菜单栏和包信息会用到 */
     SDL_SetAppMetadata(WINDOW_TITLE,"0.0.1","io.github.lupupulu.pacman-gui");
 
-    sdlgui_init(WINDOW_TITLE,WINDOW_W,WINDOW_H,"assets/icon-64.png","Default");
+    sdlgui_init(WINDOW_TITLE,WINDOW_W,WINDOW_H,"assets/icon-64.png",NULL);
 
     widget_button_t *button=widget_create_button(
         get_root_layout(),200.0f,make_align(3,3,0,0,0.0f,0.0f,0.0f,0.0f),

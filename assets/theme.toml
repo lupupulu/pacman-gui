@@ -1,0 +1,3 @@
+# 主题名映射：键是 sdlgui_init 传入的主题值（NULL 时用 Default），
+# 值是实际主题目录名。
+Default = "Default"
