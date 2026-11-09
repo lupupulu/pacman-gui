@@ -92,7 +92,10 @@ static const icon_pair_t icon_default_rules[]={
     {.name="knob",.index=ICON_KNOB},
     {.name="settings",.index=ICON_SETTINGS},
     {.name="package",.index=ICON_PACKAGE},
-    {.name="installed",.index=ICON_INSTALLED}
+    {.name="installed",.index=ICON_INSTALLED},
+    {.name="install",.index=ICON_INSTALL},
+    {.name="update",.index=ICON_UPDATE},
+    {.name="delete",.index=ICON_DELETE}
 };
 
 static darray_t(icon_pair_t) icon_rules;

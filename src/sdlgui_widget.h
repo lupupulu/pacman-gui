@@ -17,7 +17,7 @@ typedef void (*switch_callback_func)(int on,void *data);
 typedef struct {
     layout_t l;
     int on:1;
-    int controllable:1;   /* 0 时忽略鼠标点击，widget_switch_set() 仍可设置 */
+    unsigned controllable:1;   /* 0 时忽略鼠标点击，widget_switch_set() 仍可设置 */
     switch_callback_func callback;
     void *data;
 }widget_switch_t;
@@ -34,7 +34,7 @@ typedef void (*selector_callback_func)(size_t now,size_t from,void *data);
 typedef struct {
     layout_list_t l;
     size_t now_button;
-    int controllable:1;   /* 0 时忽略鼠标点击 */
+    unsigned controllable:1;   /* 0 时忽略鼠标点击 */
     selector_callback_func callback;
     void *data;
 
@@ -54,6 +54,35 @@ widget_selector_t *widget_create_selector(void *parent,align_t align,float item_
 /* 大号选择器：文字使用 TEXT_TITLE，高度取标题行高（至少 button_height）。 */
 widget_selector_t *widget_create_selector_title(void *parent,align_t align,float item_width,
     selector_callback_func callback,void *data,...);
+
+typedef void (*widget_size_func)(float *w,float *h);
+typedef struct {
+    layout_list_t l;
+    widget_size_func get_size;
+
+    widget_selector_t *selector;
+    layout_t *content;
+    layout_t **pages;
+    size_t page_count;
+    size_t now_page;
+    selector_callback_func callback;
+    void *data;
+}widget_tabs_t;
+
+/* get_size 在 update 时返回 tabs 的总宽高；NULL 或返回 0 时沿用布局尺寸。
+ * 可变参数是 tab 文字，NULL 结尾；只传 NULL 时没有内部 selector，
+ * 可用 widget_tabs_select() 由外部 selector 驱动。
+ * widget_set_tabs 把页面挂到 tabs 内，只有当前页 enable/active=1；
+ * 页面布局由 tabs 接管，删除 tabs 时会一并删除。 */
+widget_tabs_t *widget_create_tabs(void *parent,align_t align,widget_size_func get_size,
+    selector_callback_func callback,void *data,...);
+
+/* l 是 layout_t* 数组，n 是数组长度；传 NULL/0 可清空页面。 */
+void widget_set_tabs(widget_tabs_t *tabs,void *l,size_t n);
+/* 单独设置/替换第 index 页；l 为 NULL 时移除该页。 */
+void widget_set_tab(widget_tabs_t *tabs,void *l,size_t index);
+/* 程序化切换到第 index 页；会同步内部 selector 和 callback。 */
+void widget_tabs_select(widget_tabs_t *tabs,size_t index);
 
 
 /* offset 是内容滚动偏移（逻辑像素），不是相对增量 */

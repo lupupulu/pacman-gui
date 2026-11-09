@@ -38,6 +38,9 @@ typedef enum {
     ICON_SETTINGS,    /* 设置 */
     ICON_PACKAGE,     /* 安装包 */
     ICON_INSTALLED,   /* 已安装 */
+    ICON_INSTALL,     /* 安装 */
+    ICON_UPDATE,      /* 更新 */
+    ICON_DELETE,      /* 删除 */
 }theme_icon_t;
 
 typedef struct {

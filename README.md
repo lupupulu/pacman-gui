@@ -116,6 +116,9 @@ assets/Default/icon/lost.png  默认主题自带的 lost 图标（由 gen_lost_i
 assets/Default/icon/knob.png  默认主题自带的开关旋钮图标（运行时加载，不嵌入）
 assets/Default/icon/package.png 安装包图标
 assets/Default/icon/installed.png 已安装图标
+assets/Default/icon/install.png 安装图标
+assets/Default/icon/update.png 更新图标
+assets/Default/icon/delete.png 删除图标
 assets/Default/icon/settings.png 设置图标
 tools/         字体、图标、icns 与编译数据库生成脚本
 assets/        主题、字体、图标
@@ -188,7 +191,8 @@ build/         构建产物（已被 .gitignore 忽略）
 会直接读取这个文件。除 `ICON_KNOB` 外，`get_icon()` 会按当前 `TEXT_CONTEXT`
 的文字颜色给图标着色，因此 Bright/Dark 两种配色下都能看清。外部主题缺少某个
 图标时，会优先回退到主题自己的 `icon/lost.png`，没有才使用内置问号。默认主题
-提供的图标规则包括 `lost`、`knob`、`package`、`installed` 和 `settings`。
+提供的图标规则包括 `lost`、`knob`、`package`、`installed`、`install`、
+`update`、`delete` 和 `settings`。
 
 默认主题图标的源文件是 `assets/Default/icon/*.svg`，运行时读取同名 64×64 PNG。
 修改 SVG 后重新渲染：
@@ -329,6 +333,106 @@ widget_slider_set(slider,list_get_slide(list));
 - 颜色取主题 `color[]`：
   - `COLOR_SLIDER`：普通
   - `COLOR_SLIDER_HIGHLIGHT`：拖动时
+
+## Label 布局
+
+`create_layout_label()` 在 `sdlgui.c` 里提供了一个简单的文字标签布局：
+
+```c
+TTF_Font *font = obtain_font(get_font(TEXT_CONTEXT),
+                             get_text_size(TEXT_CONTEXT));
+
+layout_label_t *label = create_layout_label(
+    parent,
+    300.0f, 80.0f,                         // 标签宽高
+    make_align(3,3,0,0,0.0f,0.0f,0.0f,0.0f), // 标签自身位置
+    make_align(3,3,0,0,0.0f,0.0f,0.0f,0.0f), // 文字在标签内居中
+    font,
+    "标签文字",
+    get_text_color(TEXT_CONTEXT)
+);
+```
+
+- `text_align` 的 `horizon`：`0=左`、`1=右`、`3=居中`
+- `text_align` 的 `vertical`：`0=上`、`1=下`、`3=居中`
+- 文字会按标签宽度自动换行，并在标签高度处裁剪
+- 传入的文字会被复制，调用方可以立即释放临时字符串
+- 标签自身通过 `align` 参与布局更新，`text_align` 控制文字在标签内的对齐
+
+## Package 卡片
+
+`create_layout_package(package_t *package)` 创建一个高 104 的软件包卡片：
+
+- 包名：`TEXT_SUBTITLE`
+- 版本、维护者/提交者、许可证：`TEXT_CONTEXT`
+- 右侧按钮上下排列且等宽：
+  - 未安装：`\\install install`
+  - 已安装：上方 `\\update update`，下方 `\\delete delete`
+- maintainer 和 submitter 都为空时，整行人员信息不创建、不显示
+- 按钮回调暂未接逻辑，只用于绘制测试
+
+`main.c` 里用 tabs 代替原来的顶部 selector：
+- `package` 页：垂直 package 列表，可滚动
+- `installed` 页：空矩形
+- `settings` 页：空矩形
+
+package 列表直接作为 tabs 页面，不再套一层 `layout_t` 容器，避免子布局
+`y` 从 0 开始时被选择器遮住第一张卡片的包名。
+
+卡片宽度由所在的 `layout_list_t` 决定，内部标签和按钮会在 `package_update()`
+中按卡片宽度重新定位。测试数据里的 `zlib` 没有 maintainer 和 submitter，
+可用来确认人员信息行会被省略。
+
+## Tabs 控件
+
+Tabs 用来把一组页面布局挂在同一个内容区域里，只让当前页参与更新和绘制。
+tabs 内部使用大号 selector（`TEXT_TITLE`），而不是普通 selector。
+它可以直接带一个内部 selector：
+
+```c
+static void on_tab(size_t now,size_t from,void *data){
+    // now: 新页下标，from: 旧页下标
+}
+
+static void tabs_size(float *w,float *h){
+    *w = get_root_w();
+    *h = get_root_h() - 64.0f;   // 减去顶部工具栏
+}
+
+widget_tabs_t *tabs = widget_create_tabs(
+    get_root_layout(),
+    make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f),
+    tabs_size,
+    on_tab,
+    NULL,
+    "\\package 软件包",
+    "\\installed 已安装",
+    "\\settings 设置",
+    NULL
+);
+tabs->l.l.y = 64.0f;   // 放到顶部工具栏下面
+
+layout_t *pages[] = { package_page, installed_page, settings_page };
+widget_set_tabs(tabs, pages, 3);
+```
+
+也可以不创建内部 selector，只把 tabs 当页面容器，由外部 selector 驱动：
+
+```c
+widget_tabs_t *tabs = widget_create_tabs(
+    get_root_layout(), align, tabs_size, on_tab, NULL, NULL);
+
+widget_set_tabs(tabs, pages, 3);
+
+// 外部 selector 的回调里：
+widget_tabs_select(tabs, now);
+```
+
+- `get_size` 每次 update 都会被调用，返回 tabs 的总宽高；返回 0 的字段沿用布局尺寸
+- selector 和内容区都会随 tabs 宽度变化重新对齐
+- 只有当前页 `enable/active=1`，其余页不更新、不绘制、不接收鼠标
+- 页面布局由 tabs 接管，删除 tabs 时一并释放
+- `widget_set_tab(tabs, page, index)` 可单独设置/替换某一页
 
 ## 主题与资源搜索路径
 

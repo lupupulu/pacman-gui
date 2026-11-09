@@ -791,6 +791,127 @@ layout_rect_t *create_layout_rect(void *parent,float w,float h,align_t align){
 }
 
 
+static void label_position_text(layout_label_t *label){
+    if(label==NULL||label->text==NULL){
+        return;
+    }
+
+    draft_text_t *text=label->text;
+    float x=label->l.x;
+    float y=label->l.y;
+
+    if(label->text_align.horizon==1){
+        x=label->l.x+label->l.width-text->width;
+    }else if(label->text_align.horizon==3){
+        x=label->l.x+(label->l.width-text->width)/2.0f;
+    }
+    if(label->text_align.vertical==1){
+        y=label->l.y+label->l.height-text->height;
+    }else if(label->text_align.vertical==3){
+        y=label->l.y+(label->l.height-text->height)/2.0f;
+    }
+
+    text->x=x+label->text_align.horizon_offset;
+    text->y=y+label->text_align.vertical_offset;
+}
+
+/* label 的尺寸变化时，文字要按新的宽度重新换行、按新的高度裁剪。
+ * 清掉旧缓存，下一次 draft_draw_text() 会用新限制重建。 */
+static void label_sync_text_limits(layout_label_t *label){
+    if(label==NULL||label->text==NULL){
+        return;
+    }
+    if(label->text->width_limit!=label->l.width||
+       label->text->height_limit!=label->l.height){
+        label->text->width_limit=label->l.width;
+        label->text->height_limit=label->l.height;
+        draft_text_clear(label->text);
+    }
+}
+
+static void label_update(void *p){
+    layout_label_t *label=p;
+    if(label==NULL){
+        return;
+    }
+    layout_update(&label->l);
+    label_sync_text_limits(label);
+    label_position_text(label);
+}
+
+void label_draw(void *p){
+    layout_label_t *label=p;
+    if(label==NULL||label->text==NULL||renderer==NULL){
+        return;
+    }
+
+    layout_update(&label->l);
+    label_sync_text_limits(label);
+    label_position_text(label);
+    draft_draw_text(label->text);
+}
+
+static void label_clear(void *p){
+    layout_label_t *label=p;
+    if(label==NULL){
+        return;
+    }
+    if(label->text!=NULL){
+        draft_text_clear(label->text);
+        free(label->text);
+        label->text=NULL;
+    }
+    free(label->context);
+    label->context=NULL;
+}
+
+layout_label_t *create_layout_label(void *parent,float w,float h,align_t align,
+    align_t text_align,TTF_Font *font,const char *context,unsigned color){
+    if(font==NULL||w<=0.0f||h<=0.0f){
+        return NULL;
+    }
+
+    const char *text=context!=NULL?context:"";
+    size_t length=strlen(text);
+    char *copy=malloc(length+1);
+    if(copy==NULL){
+        return NULL;
+    }
+    memcpy(copy,text,length+1);
+
+    layout_t *p=parent?parent:&root;
+    layout_label_t *label=create_layout(
+        sizeof(*label),
+        p,
+        w,
+        h,
+        label_draw,
+        label_update,
+        label_clear,
+        NULL,
+        align
+    );
+    if(label==NULL){
+        free(copy);
+        return NULL;
+    }
+
+    label->context=copy;
+    label->text_align=text_align;
+
+    align_t zero=make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f);
+    label->text=draft_create_text(zero,font,label->context,w,h,color);
+    if(label->text==NULL){
+        delete_layout((layout_t *)label);
+        return NULL;
+    }
+    label->text->parent=(sublayout_t *)&label->l;
+
+    label_update(label);
+    return label;
+}
+
+
 
 /* ---- 绘制草稿（draft） ----
    draft 不是 layout，不进入 layout 的 sons 树；它由 create 分配，由

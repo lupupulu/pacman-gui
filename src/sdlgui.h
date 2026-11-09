@@ -225,6 +225,21 @@ void draft_draw_text(void *l);
 void draft_text_clear(void *l);   // 释放 can_change=0 的缓存纹理
 
 typedef struct {
+    layout_t l;
+    draft_text_t *text;   // 内部文字 draft，由 label 释放
+    char *context;        // label 自己复制的一份文字
+    align_t text_align;   // 文字在 label 内的对齐
+}layout_label_t;
+
+/* 在 label 内显示一段会按 w 换行、按 h 裁剪的文字。
+ * text_align 只使用 horizon/vertical 与两个 offset：
+ *   horizon: 0=左 1=右 3=居中；vertical: 0=上 1=下 3=居中。
+ * context 会被复制；字体和颜色沿用 draft_create_text() 的语义。 */
+void label_draw(void *l);
+layout_label_t *create_layout_label(void *parent,float w,float h,align_t align,
+    align_t text_align,TTF_Font *font,const char *context,unsigned color);
+
+typedef struct {
     draw_func draw;
     clear_func clear;
     SUBLAYOUT_DEF

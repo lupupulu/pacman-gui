@@ -819,6 +819,406 @@ widget_selector_t *widget_create_selector_title(void *parent,align_t align,float
     return selector;
 }
 
+/* ---- tabs ---- */
+
+static void tabs_show_page(widget_tabs_t *tabs,size_t index){
+    if(tabs==NULL){
+        return;
+    }
+    tabs->now_page=index;
+
+    for(size_t i=0;i<tabs->page_count;i++){
+        layout_t *page=tabs->pages!=NULL?tabs->pages[i]:NULL;
+        if(page==NULL){
+            continue;
+        }
+        unsigned selected=(i==index)?1u:0u;
+        page->enable=selected;
+        page->active=selected;
+    }
+}
+
+static void tabs_selector_changed(size_t now,size_t from,void *data){
+    widget_tabs_t *tabs=data;
+    if(tabs==NULL){
+        return;
+    }
+
+    tabs_show_page(tabs,now);
+
+    if(tabs->callback!=NULL){
+        tabs->callback(now,from,tabs->data);
+    }
+}
+
+static void tabs_resize_selector(widget_tabs_t *tabs){
+    if(tabs==NULL||tabs->selector==NULL||tabs->selector->item_count==0){
+        return;
+    }
+
+    widget_selector_t *selector=tabs->selector;
+    float item_width=tabs->l.l.width/(float)selector->item_count;
+    if(item_width<=0.0f){
+        return;
+    }
+
+    float diff=item_width-selector->item_width;
+    if(diff<0.0f){
+        diff=-diff;
+    }
+    if(diff<=0.01f){
+        return;
+    }
+
+    selector->item_width=item_width;
+    selector->l.l.width=tabs->l.l.width;
+
+    size_t label_index=0;
+    for(size_t i=0;i<selector->l.l.son_size;i++){
+        layout_t *label=selector->l.l.sons[i];
+        if(label==NULL||label->draw!=selector_label_draw){
+            continue;
+        }
+        label->width=item_width;
+        label->align=make_align(1,3,0,1,
+            item_width*((float)label_index-(float)selector->item_count),
+            0.0f,0.0f,1.0f);
+        label_index++;
+    }
+
+    layout_animation_t *animation=widget_find_animation(selector);
+    if(animation==NULL||!animation->lasting){
+        selector->from_x=selector->l.l.x+(float)selector->now_button*item_width;
+        selector->to_x=selector->from_x;
+    }
+}
+
+static void tabs_update(void *p){
+    widget_tabs_t *tabs=p;
+    if(tabs==NULL){
+        return;
+    }
+    layout_update(&tabs->l.l);
+
+    if(tabs->get_size!=NULL){
+        float width=tabs->l.l.width;
+        float height=tabs->l.l.height;
+        tabs->get_size(&width,&height);
+        if(width>0.0f){
+            tabs->l.l.width=width;
+        }
+        if(height>0.0f){
+            tabs->l.l.height=height;
+        }
+    }
+
+    tabs_resize_selector(tabs);
+
+    /* 子布局的 align 只处理右/下/居中等模式，没有“贴父布局左上角”；
+     * 这里把 selector 和 content 固定到 tabs 的实际位置。 */
+    if(tabs->selector!=NULL){
+        tabs->selector->l.l.x=tabs->l.l.x;
+        tabs->selector->l.l.y=tabs->l.l.y;
+        tabs->selector->l.l.width=tabs->l.l.width;
+    }
+    if(tabs->content!=NULL){
+        float header=tabs->selector!=NULL?tabs->selector->l.l.height:0.0f;
+        float content_height=tabs->l.l.height-header;
+        if(content_height<0.0f){
+            content_height=0.0f;
+        }
+        tabs->content->x=tabs->l.l.x;
+        tabs->content->y=tabs->l.l.y+header;
+        tabs->content->width=tabs->l.l.width;
+        tabs->content->height=content_height;
+    }
+}
+
+static void tabs_clear(void *p){
+    widget_tabs_t *tabs=p;
+    if(tabs==NULL){
+        return;
+    }
+
+    /* 页面本身是 content 的子布局，delete_layout() 已经先删掉它们；
+     * 这里只释放页面指针数组。 */
+    free(tabs->pages);
+    tabs->pages=NULL;
+    tabs->page_count=0;
+    tabs->selector=NULL;
+    tabs->content=NULL;
+}
+
+static int tabs_attach_page(widget_tabs_t *tabs,layout_t *page,size_t index){
+    if(tabs==NULL||tabs->content==NULL||page==NULL){
+        return 0;
+    }
+    if(!layout_attach(page,tabs->content)){
+        return 0;
+    }
+
+    page->align=make_align(3,3,1,1,0.0f,0.0f,1.0f,1.0f);
+    unsigned selected=(index==tabs->now_page)?1u:0u;
+    page->enable=selected;
+    page->active=selected;
+    return 1;
+}
+
+void widget_set_tabs(widget_tabs_t *tabs,void *l,size_t n){
+    if(tabs==NULL||tabs->content==NULL){
+        return;
+    }
+    layout_t **new_pages=(layout_t **)l;
+    if(n>0&&new_pages==NULL){
+        return;
+    }
+
+    for(size_t i=0;i<tabs->page_count;i++){
+        layout_t *old=tabs->pages!=NULL?tabs->pages[i]:NULL;
+        if(old!=NULL){
+            layout_detach(old);
+            delete_layout(old);
+        }
+    }
+    free(tabs->pages);
+    tabs->pages=NULL;
+    tabs->page_count=0;
+
+    if(n==0){
+        return;
+    }
+
+    tabs->pages=calloc(n,sizeof(*tabs->pages));
+    if(tabs->pages==NULL){
+        return;
+    }
+    tabs->page_count=n;
+
+    for(size_t i=0;i<n;i++){
+        layout_t *page=new_pages[i];
+        if(page==NULL){
+            continue;
+        }
+        if(tabs_attach_page(tabs,page,i)){
+            tabs->pages[i]=page;
+        }else{
+            SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                        "widget_set_tabs: failed to attach page %zu",i);
+        }
+    }
+
+    tabs_show_page(tabs,tabs->now_page);
+}
+
+void widget_set_tab(widget_tabs_t *tabs,void *l,size_t index){
+    if(tabs==NULL||tabs->content==NULL){
+        return;
+    }
+
+    if(index>=tabs->page_count){
+        size_t old_count=tabs->page_count;
+        size_t new_count=index+1;
+        layout_t **pages=realloc(tabs->pages,new_count*sizeof(*pages));
+        if(pages==NULL){
+            return;
+        }
+        tabs->pages=pages;
+        for(size_t i=old_count;i<new_count;i++){
+            tabs->pages[i]=NULL;
+        }
+        tabs->page_count=new_count;
+    }
+
+    layout_t *old=tabs->pages[index];
+    if(old!=NULL){
+        layout_detach(old);
+        delete_layout(old);
+        tabs->pages[index]=NULL;
+    }
+
+    if(l==NULL){
+        return;
+    }
+
+    layout_t *page=l;
+    if(tabs_attach_page(tabs,page,index)){
+        tabs->pages[index]=page;
+    }else{
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "widget_set_tab: failed to attach page %zu",index);
+    }
+}
+
+void widget_tabs_select(widget_tabs_t *tabs,size_t index){
+    if(tabs==NULL){
+        return;
+    }
+
+    if(tabs->selector!=NULL&&index<tabs->selector->item_count){
+        if(index==tabs->selector->now_button){
+            tabs_show_page(tabs,index);
+            return;
+        }
+        selector_select(tabs->selector,index);
+        return;
+    }
+
+    size_t from=tabs->now_page;
+    tabs_show_page(tabs,index);
+    if(tabs->callback!=NULL){
+        tabs->callback(index,from,tabs->data);
+    }
+}
+
+widget_tabs_t *widget_create_tabs(void *parent,align_t align,widget_size_func get_size,
+    selector_callback_func callback,void *data,...){
+    va_list arg;
+    va_start(arg,data);
+    size_t count=0;
+    while(va_arg(arg,const char *)!=NULL){
+        count++;
+    }
+    va_end(arg);
+
+    char **texts=NULL;
+    if(count>0){
+        texts=malloc(count*sizeof(*texts));
+        if(texts==NULL){
+            return NULL;
+        }
+        va_start(arg,data);
+        for(size_t i=0;i<count;i++){
+            texts[i]=(char *)va_arg(arg,const char *);
+        }
+        va_end(arg);
+    }
+
+    float width=0.0f;
+    float height=0.0f;
+    if(parent!=NULL){
+        layout_t *p=parent;
+        width=p->width;
+        height=p->height;
+    }
+    if(get_size!=NULL){
+        float wanted_w=width;
+        float wanted_h=height;
+        get_size(&wanted_w,&wanted_h);
+        if(wanted_w>0.0f){
+            width=wanted_w;
+        }
+        if(wanted_h>0.0f){
+            height=wanted_h;
+        }
+    }
+    if(width<=0.0f||height<=0.0f){
+        free(texts);
+        return NULL;
+    }
+
+    float selector_height=0.0f;
+    float item_width=0.0f;
+    TTF_Font *font=NULL;
+    if(count>0){
+        /* tabs 使用大号选择器（TEXT_TITLE），和普通 selector 区分。 */
+        font=obtain_font(get_font(TEXT_TITLE),get_text_size(TEXT_TITLE));
+        if(font==NULL){
+            free(texts);
+            return NULL;
+        }
+
+        selector_height=(float)TTF_GetFontHeight(font);
+        if(selector_height<=0.0f){
+            selector_height=get_theme()->button_height;
+        }
+        if(get_theme()->button_height>selector_height){
+            selector_height=get_theme()->button_height;
+        }
+        if(selector_height<=0.0f||selector_height>=height){
+            free(texts);
+            return NULL;
+        }
+
+        item_width=width/(float)count;
+        if(item_width<=0.0f){
+            free(texts);
+            return NULL;
+        }
+    }
+
+    widget_tabs_t *tabs=(widget_tabs_t *)create_layout(
+        sizeof(*tabs),
+        parent,
+        width,
+        height,
+        NULL,
+        tabs_update,
+        tabs_clear,
+        NULL,
+        align
+    );
+    if(tabs==NULL){
+        free(texts);
+        return NULL;
+    }
+
+    tabs->get_size=get_size;
+    tabs->callback=callback;
+    tabs->data=data;
+    tabs->now_page=0;
+    tabs->pages=NULL;
+    tabs->page_count=0;
+    tabs->selector=NULL;
+    tabs->content=NULL;
+
+    if(count>0){
+        align_t selector_align=make_align(0,0,1,0,0.0f,0.0f,1.0f,0.0f);
+        tabs->selector=selector_create_impl(
+            (layout_t *)tabs,
+            selector_align,
+            item_width,
+            font,
+            TEXT_TITLE,
+            selector_height,
+            tabs_selector_changed,
+            tabs,
+            texts,
+            count
+        );
+        free(texts);
+        texts=NULL;
+        if(tabs->selector==NULL){
+            delete_layout((layout_t *)tabs);
+            return NULL;
+        }
+    }
+
+    align_t content_align;
+    if(selector_height>0.0f){
+        content_align=make_align(0,0,1,2,0.0f,selector_height,1.0f,-selector_height);
+    }else{
+        content_align=make_align(0,0,1,1,0.0f,0.0f,1.0f,1.0f);
+    }
+    tabs->content=create_layout(
+        sizeof(*tabs->content),
+        (layout_t *)tabs,
+        width,
+        height-selector_height,
+        NULL,
+        layout_update,
+        NULL,
+        NULL,
+        content_align
+    );
+    free(texts);
+    if(tabs->content==NULL){
+        delete_layout((layout_t *)tabs);
+        return NULL;
+    }
+
+    return tabs;
+}
+
 static void slider_update(void *p);
 static void slider_draw(void *p);
 static void slider_mouse(void *p);
