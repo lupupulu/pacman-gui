@@ -218,10 +218,10 @@ int main(int argc,char *argv[]){
         settings_page->color=get_color(COLOR_SECONDARY);
     }
 
-    widget_tabs_t *tabs=widget_create_tabs(
-        get_root_layout(),
+    widget_selector_t *selector=widget_create_selector_title(
+        NULL,
         zero,
-        main_tabs_size,
+        get_root_w()/3.0f,
         NULL,
         NULL,
         "\\package package",
@@ -229,7 +229,20 @@ int main(int argc,char *argv[]){
         "\\settings settings",
         NULL
     );
-    if(tabs==NULL||package_list==NULL||installed_page==NULL||settings_page==NULL){
+    if(selector!=NULL){
+        selector->l.l.x=0.0f;
+        selector->l.l.y=0.0f;
+    }
+
+    widget_tabs_t *tabs=widget_create_tabs(
+        get_root_layout(),
+        zero,
+        main_tabs_size,
+        selector,
+        NULL,
+        NULL
+    );
+    if(tabs==NULL||selector==NULL||package_list==NULL||installed_page==NULL||settings_page==NULL){
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("Failed to create main tabs"));
     }else{
         layout_t *pages[]={

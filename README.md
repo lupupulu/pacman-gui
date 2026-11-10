@@ -247,7 +247,7 @@ widget_switch_t *sw = widget_create_switch(
 );
 
 widget_switch_set(sw,1);          // 程序化打开，不触发 callback
-int on = widget_switch_get(sw);
+int on = sw->on;
 ```
 
 点击回调的参数是切换后的状态（0/1），不是 `button_status_t`。
@@ -263,8 +263,31 @@ int on = widget_switch_get(sw);
 
 旋钮使用主题图标 `ICON_KNOB`（默认文件 `assets/Default/icon/knob.png`），
 按原图颜色绘制，不再按颜色字段着色。图标默认铺满开关高度，因此圆形边缘与
-开关上下外沿对齐；主题没有提供该图标时只绘制轨道，不回退到色块。
+开关上下外沿对齐；主题没有提供该图标时 `widget_create_switch()` 返回 NULL。
+
 旋钮位置由主题根层的 `switch_animation_time` 控制动画（默认 120 ms）。
+
+不依赖主题的 raw 版本：
+
+```c
+widget_switch_t *sw = widget_create_raw_switch(
+    parent,
+    width,          // 轨道总长
+    track_height,   // 轨道高度
+    knob_height,    // 旋钮图标高度
+    radius,         // 圆角半径；0=直角，<0 取轨道高度/2
+    align,
+    off_color,      // 关闭轨道颜色
+    on_color,       // 打开轨道颜色
+    animation_ms,   // 滑动动画时长
+    knob_texture,   // 调用方提供的旋钮纹理，开关不负责释放
+    on_switch,
+    NULL
+);
+```
+
+`widget_create_switch()` 只负责从主题取尺寸、颜色、动画时长和旋钮纹理，
+然后调用 `widget_create_raw_switch()`。
 
 ## 选择器控件
 
@@ -296,6 +319,38 @@ widget_selector_t *selector = widget_create_selector(
 - 高度取 `button_height`，并保证至少容纳一行字体；`controllable=0` 时忽略点击。
 - `widget_create_selector_title()` 参数相同，但文字使用 `TEXT_TITLE`，高度取标题
   行高（至少 `button_height`），适合顶栏/底栏的大号选择器。
+主题版本仍使用可变参数；不依赖主题的 raw 版本才使用数组 + 数量：
+
+```c
+widget_selector_t *selector = widget_create_raw_selector(
+    parent,
+    align,
+    item_width,      // 每项宽度
+    height,          // 选择器高度
+    radius,          // 圆角半径；0=直角，<0 取高度/2
+    font,
+    items,           // const char *const *，可为 NULL
+    count,
+    track_color,     // 轨道颜色
+    selected_color,  // 选中滑块颜色
+    text_color,
+    animation_ms,
+    callback,
+    data
+);
+```
+
+setter：
+
+```c
+set_selector_item(selector, 1, "\\installed Installed");
+set_selector_item_width(selector, 180.0f);
+```
+
+- `set_selector_item()` 会复制并替换第 i 项文字，重建该项文字纹理。
+- `set_selector_item_width()` 会重设所有项目的宽度、对齐和文字换行宽度。
+- `widget_create_selector()` / `_title()` 只负责从主题取字体、颜色和动画时长，
+  然后调用 `widget_create_raw_selector()`。
 
 ## 滑块控件
 
@@ -385,9 +440,7 @@ package 列表直接作为 tabs 页面，不再套一层 `layout_t` 容器，避
 
 ## Tabs 控件
 
-Tabs 用来把一组页面布局挂在同一个内容区域里，只让当前页参与更新和绘制。
-tabs 内部使用大号 selector（`TEXT_TITLE`），而不是普通 selector。
-它可以直接带一个内部 selector：
+Tabs 只负责页面切换，不再创建 selector。调用方先创建 selector，再传给 tabs：
 
 ```c
 static void on_tab(size_t now,size_t from,void *data){
@@ -396,42 +449,38 @@ static void on_tab(size_t now,size_t from,void *data){
 
 static void tabs_size(float *w,float *h){
     *w = get_root_w();
-    *h = get_root_h() - 64.0f;   // 减去顶部工具栏
+    *h = get_root_h();
 }
 
-widget_tabs_t *tabs = widget_create_tabs(
-    get_root_layout(),
-    make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f),
-    tabs_size,
-    on_tab,
-    NULL,
+widget_selector_t *selector = widget_create_selector_title(
+    get_root_layout(), selector_align, 200.0f,
+    NULL, NULL,
     "\\package 软件包",
     "\\installed 已安装",
     "\\settings 设置",
     NULL
 );
-tabs->l.l.y = 64.0f;   // 放到顶部工具栏下面
+
+widget_tabs_t *tabs = widget_create_tabs(
+    get_root_layout(),
+    make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f),
+    tabs_size,
+    selector,
+    on_tab,
+    NULL
+);
 
 layout_t *pages[] = { package_page, installed_page, settings_page };
 widget_set_tabs(tabs, pages, 3);
 ```
 
-也可以不创建内部 selector，只把 tabs 当页面容器，由外部 selector 驱动：
-
-```c
-widget_tabs_t *tabs = widget_create_tabs(
-    get_root_layout(), align, tabs_size, on_tab, NULL, NULL);
-
-widget_set_tabs(tabs, pages, 3);
-
-// 外部 selector 的回调里：
-widget_tabs_select(tabs, now);
-```
-
+- selector 的 parent 为 `NULL` 时，tabs 才把它挂到自己下面并管理宽度
+- selector 已经挂在其他父布局下时，tabs 保持它的位置和宽度不变，只把内容区放到它的下边缘
+- tabs 通过检测 selector 的 `now_button` 变化切换页面，因此不会覆盖 selector 自己的 callback
 - `get_size` 每次 update 都会被调用，返回 tabs 的总宽高；返回 0 的字段沿用布局尺寸
-- selector 和内容区都会随 tabs 宽度变化重新对齐
 - 只有当前页 `enable/active=1`，其余页不更新、不绘制、不接收鼠标
 - 页面布局由 tabs 接管，删除 tabs 时一并释放
+- `widget_tabs_select(tabs, index)` 可程序化切换；有 selector 时同步其选中状态
 - `widget_set_tab(tabs, page, index)` 可单独设置/替换某一页
 
 ## 主题与资源搜索路径

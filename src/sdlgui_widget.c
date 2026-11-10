@@ -1,6 +1,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3_ttf/SDL_ttf.h>
 #include "sdlgui_widget.h"
+#include "CDS/darray.h"
 #include <stdlib.h>
 
 
@@ -32,18 +33,22 @@ static unsigned color_gradient(unsigned target,unsigned origin,size_t timer,size
 typedef struct {
     unsigned origin_color;   /* 本次动画起始颜色 */
     unsigned target_color;   /* 本次动画目标颜色 */
+    unsigned base_color;     /* 常态背景色 */
+    unsigned hover_color;    /* 悬停背景色 */
+    unsigned press_color;    /* 按下背景色 */
+    unsigned long duration;  /* 颜色动画时长（ms） */
     int trigger_hold;        /* 触发色是否还在展示 */
     int pending_status;      /* 触发色结束后要切换到的状态 */
 }button_anim_data_t;
 
-static unsigned button_status_color(int status){
+static unsigned button_status_color(const button_anim_data_t *data,int status){
     if(status==BUTTON_STATUS_HOVER){
-        return get_color(COLOR_BUTTON_HIGHLIGHT);
+        return data->hover_color;
     }
     if(status==BUTTON_STATUS_TRIGGER){
-        return get_color(COLOR_BUTTON_CONFIRM);
+        return data->press_color;
     }
-    return get_color(COLOR_BUTTON);
+    return data->base_color;
 }
 
 /* 动画数据挂在 layout_animation_t.data 上，由动画自身的 clear 释放。 */
@@ -67,7 +72,7 @@ static void button_animation_finish(button_anim_data_t *data,layout_animation_t 
         int pending=data->pending_status;
         if(pending!=BUTTON_STATUS_TRIGGER){
             data->origin_color=draft->color;
-            data->target_color=button_status_color(pending);
+            data->target_color=button_status_color(data,pending);
             animation->status=pending;
             animation->timer=SDL_GetTicks();
             animation->lasting=1;
@@ -88,7 +93,7 @@ static void button_animation(void *a){
     }
 
     unsigned target=data->target_color;
-    unsigned long duration=get_theme()->button_animation_time;
+    unsigned long duration=data->duration;
     if(animation->lasting&&duration>0){
         unsigned long elapsed=SDL_GetTicks()-animation->timer;
         if(elapsed<duration){
@@ -140,7 +145,7 @@ static void button_callback(int status,void *data){
     }
 
     anim->origin_color=draft->color;
-    anim->target_color=button_status_color(status);
+    anim->target_color=button_status_color(anim,status);
     if(status==BUTTON_STATUS_TRIGGER){
         anim->trigger_hold=1;
         anim->pending_status=BUTTON_STATUS_TRIGGER;
@@ -158,20 +163,20 @@ static void button_callback(int status,void *data){
     }
 }
 
-widget_button_t *widget_create_button(void *parent,float width,align_t align,const char *text,button_callback_func callback,void *data){
-    float height=get_theme()->button_height;
-    if(get_theme()->item_height>0.0f&&height>get_theme()->item_height){
-        height=get_theme()->item_height;
-    }
-    if(width<=0.0f||height<=0.0f){
+widget_button_t *widget_create_raw_button(void *parent,float w,float h,float r,align_t align,
+    TTF_Font *font,const char *text,
+    unsigned color,unsigned hover_color,unsigned press_color,unsigned text_color,
+    unsigned long animation_time,
+    button_callback_func callback,void *data){
+    if(w<=0.0f||h<=0.0f||font==NULL){
         return NULL;
     }
 
     widget_button_t *widget=create_layout(
         sizeof(*widget),
         parent,
-        width,
-        height,
+        w,
+        h,
         NULL,
         layout_update,
         NULL,
@@ -187,16 +192,16 @@ widget_button_t *widget_create_button(void *parent,float width,align_t align,con
 
     align_t full=make_align(3,3,1,1,0,0,1.0f,1.0f);
 
+    const char *context=text!=NULL?text:"";
     layout_animation_t *animation=create_layout_animation(widget,button_animation,
-        draft_create_rrect(full,width,height,get_theme()->rect_round_corner,get_color(COLOR_BUTTON),get_color(COLOR_BUTTON)),
+        draft_create_rrect(full,w,h,r,color,color),
         draft_create_icon_with_text(
             make_align(3,3,0,0,0.0f,0.0f,0.0f,0.0f),
-            obtain_font(get_font(TEXT_CONTEXT),
-            get_text_size(TEXT_CONTEXT)),
-            (char *)text,
-            width,
-            height*ICON_TEXT_SCALE,
-            get_text_color(TEXT_CONTEXT)
+            font,
+            (char *)context,
+            w,
+            h*ICON_TEXT_SCALE,
+            text_color
         ),
         NULL
     );
@@ -210,17 +215,54 @@ widget_button_t *widget_create_button(void *parent,float width,align_t align,con
         delete_layout((layout_t *)widget);
         return NULL;
     }
-    anim->origin_color=get_color(COLOR_BUTTON);
-    anim->target_color=get_color(COLOR_BUTTON);
+    anim->origin_color=color;
+    anim->target_color=color;
+    anim->base_color=color;
+    anim->hover_color=hover_color;
+    anim->press_color=press_color;
+    anim->duration=animation_time;
     anim->pending_status=BUTTON_STATUS_OUT;
     animation->data=anim;
     animation->l.clear=button_animation_clear;
 
-    bbox_rrect_t *bbox=bbox_create_rrect(full,width,height,get_theme()->rect_round_corner);
-    layout_button_t *button=create_layout_button(widget,width,height,full,button_callback,widget,bbox,NULL);
+    bbox_rrect_t *bbox=bbox_create_rrect(full,w,h,r);
+    layout_button_t *button=create_layout_button(widget,w,h,full,button_callback,widget,bbox,NULL);
     (void)button;
 
     return widget;
+}
+
+widget_button_t *widget_create_button(void *parent,float width,align_t align,const char *text,
+    button_callback_func callback,void *data){
+    float height=get_theme()->button_height;
+    if(get_theme()->item_height>0.0f&&height>get_theme()->item_height){
+        height=get_theme()->item_height;
+    }
+    if(width<=0.0f||height<=0.0f){
+        return NULL;
+    }
+
+    TTF_Font *font=obtain_font(get_font(TEXT_CONTEXT),get_text_size(TEXT_CONTEXT));
+    if(font==NULL){
+        return NULL;
+    }
+
+    return widget_create_raw_button(
+        parent,
+        width,
+        height,
+        get_theme()->rect_round_corner,
+        align,
+        font,
+        text,
+        get_color(COLOR_BUTTON),
+        get_color(COLOR_BUTTON_HIGHLIGHT),
+        get_color(COLOR_BUTTON_CONFIRM),
+        get_text_color(TEXT_CONTEXT),
+        get_theme()->button_animation_time,
+        callback,
+        data
+    );
 }
 
 typedef struct {
@@ -240,7 +282,8 @@ static int switch_get_drafts(layout_animation_t *animation,switch_drafts_t *d){
 }
 
 /* 按当前旋钮位置更新轨道、开启色块和旋钮。 */
-static void switch_apply(switch_drafts_t *d,float left,float top,float width,float height,float knob_x,int on){
+static void switch_apply(switch_drafts_t *d,float left,float top,float width,float height,
+    float knob_x,int on,unsigned off_color,unsigned on_color,float corner_radius){
     draft_rrect_t *track=d->track;
     draft_rrect_t *on_block=d->on_block;
     float track_w=track->width;
@@ -253,9 +296,9 @@ static void switch_apply(switch_drafts_t *d,float left,float top,float width,flo
     float track_y=top+(height-track_h)/2.0f;
     track->x=track_x;
     track->y=track_y;
-    track->r=track_h/2.0f;
+    track->r=corner_radius;
     track->auto_radius=0;
-    track->color=get_color(COLOR_SWITCH_OFF);
+    track->color=off_color;
     track->border_color=0;
 
     float knob_w=d->knob!=NULL?d->knob->width:0.0f;
@@ -276,9 +319,9 @@ static void switch_apply(switch_drafts_t *d,float left,float top,float width,flo
     on_block->y=track_y;
     on_block->width=track_w*progress;
     on_block->height=track_h;
-    on_block->r=track_h/2.0f;
+    on_block->r=corner_radius;
     on_block->auto_radius=0;
-    on_block->color=get_color(COLOR_SWITCH_ON);
+    on_block->color=on_color;
     on_block->border_color=0;
 
     if(d->knob!=NULL){
@@ -312,11 +355,21 @@ static void switch_update(void *p){
         d.knob->x=sw->on?right:left;
     }
 
-    switch_apply(&d,left,sw->l.y,width,sw->l.height,d.knob!=NULL?d.knob->x:left,sw->on);
+    switch_apply(&d,left,sw->l.y,width,sw->l.height,
+        d.knob!=NULL?d.knob->x:left,sw->on,sw->off_color,sw->on_color,
+        sw->corner_radius);
 }
 
 static void switch_animation(void *a){
     layout_animation_t *animation=a;
+    if(animation==NULL){
+        return;
+    }
+    widget_switch_t *sw=(widget_switch_t *)animation->l.parent;
+    if(sw==NULL){
+        return;
+    }
+
     switch_drafts_t d;
     if(!switch_get_drafts(animation,&d)){
         return;
@@ -337,7 +390,7 @@ static void switch_animation(void *a){
     unsigned long elapsed=now-animation->timer;
     animation->timer=now;
 
-    float need=(float)get_theme()->switch_animation_time;
+    float need=(float)sw->animation_time;
     float step=need>0.0f?(right-left)*((float)elapsed/need):(right-left);
 
     if(animation->status==1){
@@ -356,9 +409,9 @@ static void switch_animation(void *a){
         }
     }
 
-    widget_switch_t *sw=(widget_switch_t *)animation->l.parent;
-    int on=sw!=NULL?sw->on:(animation->status==1);
-    switch_apply(&d,left,animation->l.y,animation->l.width,animation->l.height,d.knob->x,on);
+    int on=sw->on;
+    switch_apply(&d,left,animation->l.y,animation->l.width,animation->l.height,
+        d.knob->x,on,sw->off_color,sw->on_color,sw->corner_radius);
 }
 /* layout_button 只上报按钮状态，这里翻译成开关切换 */
 static void switch_button_callback(int status,void *data){
@@ -383,30 +436,27 @@ static void switch_button_callback(int status,void *data){
     }
 }
 
-widget_switch_t *widget_create_switch(void *parent,align_t align,switch_callback_func callback,void *data){
-    float track_h=get_theme()->button_height;
-    float knob_h=get_theme()->switch_icon_height;
-    if(knob_h<=0.0f){
-        knob_h=track_h;
-    }
-
-    float height=MAX(track_h,knob_h);
-    float width=get_theme()->switch_width;
-    if(width<=0.0f||height<=0.0f){
+widget_switch_t *widget_create_raw_switch(void *parent,float w,float track_h,float knob_h,
+    float r,align_t align,unsigned off_color,unsigned on_color,
+    unsigned long animation_time,SDL_Texture *knob_icon,
+    switch_callback_func callback,void *data){
+    if(w<=0.0f||track_h<=0.0f||knob_h<=0.0f||knob_icon==NULL){
         return NULL;
     }
 
+    float corner_radius=r>=0.0f?r:track_h/2.0f;
+    float height=MAX(track_h,knob_h);
     float track_r=track_h/2.0f;
     float knob_r=knob_h/2.0f;
-    float track_w=knob_r>track_r?width-knob_r*2.0f+track_r*2.0f:width;
+    float track_w=knob_r>track_r?w-knob_r*2.0f+track_r*2.0f:w;
     if(track_w<=0.0f){
-        track_w=width;
+        track_w=w;
     }
 
     widget_switch_t *sw=create_layout(
         sizeof(*sw),
         parent,
-        width,
+        w,
         height,
         NULL,
         switch_update,
@@ -420,16 +470,20 @@ widget_switch_t *widget_create_switch(void *parent,align_t align,switch_callback
 
     sw->on=0;
     sw->controllable=1;
+    sw->off_color=off_color;
+    sw->on_color=on_color;
+    sw->corner_radius=corner_radius;
+    sw->animation_time=animation_time;
     sw->callback=callback;
     sw->data=data;
 
     align_t full=make_align(3,3,1,1,0,0,1.0f,1.0f);
-    bbox_rrect_t *bbox=bbox_create_rrect(full,width,height,height/2.0f);
+    bbox_rrect_t *bbox=bbox_create_rrect(full,w,height,corner_radius);
     if(bbox==NULL){
         delete_layout((layout_t *)sw);
         return NULL;
     }
-    layout_button_t *button=create_layout_button(sw,width,track_h,full,switch_button_callback,sw,bbox,NULL);
+    layout_button_t *button=create_layout_button(sw,w,track_h,full,switch_button_callback,sw,bbox,NULL);
     if(button==NULL){
         free(bbox);
         delete_layout((layout_t *)sw);
@@ -441,10 +495,9 @@ widget_switch_t *widget_create_switch(void *parent,align_t align,switch_callback
     align_t knob_align=make_align(0,3,0,0,0.0f,0.0f,0.0f,0.0f);
     layout_animation_t *animation=create_layout_animation(
         sw,switch_animation,
-        draft_create_rrect(track_align,track_w,track_h,track_h/2.0f,get_color(COLOR_SWITCH_OFF),0),
-        draft_create_rrect(on_align,0.0f,track_h,track_h/2.0f,get_color(COLOR_SWITCH_ON),0),
-        /* 宽度 <=0 时按旋钮纹理原比例，用开关旋钮高度缩放 */
-        draft_create_texture(knob_align,get_icon(ICON_KNOB),0.0f,knob_h),
+        draft_create_rrect(track_align,track_w,track_h,corner_radius,off_color,0),
+        draft_create_rrect(on_align,0.0f,track_h,corner_radius,on_color,0),
+        draft_create_texture(knob_align,knob_icon,0.0f,knob_h),
         NULL
     );
     if(animation==NULL){
@@ -455,6 +508,34 @@ widget_switch_t *widget_create_switch(void *parent,align_t align,switch_callback
 
     switch_update(sw);
     return sw;
+}
+
+widget_switch_t *widget_create_switch(void *parent,align_t align,switch_callback_func callback,void *data){
+    float track_h=get_theme()->button_height;
+    float knob_h=get_theme()->switch_icon_height;
+    if(knob_h<=0.0f){
+        knob_h=track_h;
+    }
+    float width=get_theme()->switch_width;
+    SDL_Texture *knob=get_icon(ICON_KNOB);
+    if(width<=0.0f||track_h<=0.0f||knob_h<=0.0f||knob==NULL){
+        return NULL;
+    }
+
+    return widget_create_raw_switch(
+        parent,
+        width,
+        track_h,
+        knob_h,
+        track_h/2.0f,
+        align,
+        get_color(COLOR_SWITCH_OFF),
+        get_color(COLOR_SWITCH_ON),
+        get_theme()->switch_animation_time,
+        knob,
+        callback,
+        data
+    );
 }
 
 
@@ -505,6 +586,79 @@ static void selector_label_clear(void *p){
 
 static void selector_update(void *p);
 
+static char *selector_strdup(const char *s){
+    if(s==NULL){
+        return NULL;
+    }
+    size_t size=strlen(s)+1;
+    char *copy=malloc(size);
+    if(copy!=NULL){
+        memcpy(copy,s,size);
+    }
+    return copy;
+}
+
+static void selector_clear(void *p){
+    widget_selector_t *selector=p;
+    if(selector==NULL){
+        return;
+    }
+    if(selector->items!=NULL){
+        for(size_t i=0;i<selector->item_count;i++){
+            free(selector->items[i]);
+        }
+        free(selector->items);
+        selector->items=NULL;
+    }
+    selector->item_count=0;
+}
+
+static selector_label_t *selector_label_at(widget_selector_t *selector,size_t index){
+    if(selector==NULL||index>=selector->item_count){
+        return NULL;
+    }
+    size_t seen=0;
+    for(size_t i=0;i<selector->l.l.son_size;i++){
+        layout_t *son=selector->l.l.sons[i];
+        if(son==NULL||son->draw!=selector_label_draw){
+            continue;
+        }
+        if(seen==index){
+            return (selector_label_t *)son;
+        }
+        seen++;
+    }
+    return NULL;
+}
+
+static void selector_label_apply(widget_selector_t *selector,selector_label_t *label,size_t index){
+    if(selector==NULL||label==NULL){
+        return;
+    }
+
+    if(label->text!=NULL){
+        draft_texture_clear(label->text);
+        free(label->text);
+        label->text=NULL;
+    }
+
+    const char *text=selector->items!=NULL?selector->items[index]:NULL;
+    if(text==NULL){
+        text="";
+    }
+    label->text=draft_create_icon_with_text(
+        make_align(3,3,0,0,0.0f,0.0f,0.0f,0.0f),
+        selector->font,
+        (char *)text,
+        selector->item_width,
+        selector->item_height*ICON_TEXT_SCALE,
+        selector->text_color
+    );
+    if(label->text!=NULL){
+        label->text->parent=(sublayout_t *)&label->l;
+    }
+}
+
 static void selector_animation(void *a){
     layout_animation_t *animation=a;
     widget_selector_t *selector=animation!=NULL?(widget_selector_t *)animation->l.parent:NULL;
@@ -519,7 +673,7 @@ static void selector_animation(void *a){
         return;
     }
 
-    unsigned long duration=get_theme()->switch_animation_time;
+    unsigned long duration=selector->animation_time;
     if(!animation->lasting||duration==0){
         thumb->x=selector->to_x;
         animation->lasting=0;
@@ -561,7 +715,10 @@ static void selector_update(void *p){
 
     float width=animation->l.width;
     float height=animation->l.height;
-    float radius=height/2.0f;
+    float radius=selector->corner_radius;
+    if(radius<0.0f){
+        radius=height/2.0f;
+    }
 
     track->x=animation->l.x;
     track->y=animation->l.y;
@@ -569,7 +726,7 @@ static void selector_update(void *p){
     track->height=height;
     track->r=radius;
     track->auto_radius=0;
-    track->color=get_color(COLOR_SWITCH_OFF);
+    track->color=selector->track_color;
     track->border_color=0;
 
     thumb->y=animation->l.y;
@@ -577,7 +734,7 @@ static void selector_update(void *p){
     thumb->height=height;
     thumb->r=radius;
     thumb->auto_radius=0;
-    thumb->color=get_color(COLOR_SWITCH_ON);
+    thumb->color=selector->selected_color;
     thumb->border_color=0;
     if(!animation->lasting){
         thumb->x=animation->l.x+selector->now_button*selector->item_width;
@@ -639,10 +796,12 @@ static void selector_mouse(void *p){
     selector->last_left=pressed?1u:0u;
 }
 
-static widget_selector_t *selector_create_impl(void *parent,align_t align,float item_width,
-    TTF_Font *font,theme_text_t text_level,float height,selector_callback_func callback,
-    void *data,char *const *texts,size_t count){
-    if(font==NULL||item_width<=0.0f||height<=0.0f||count==0){
+widget_selector_t *widget_create_raw_selector(void *parent,align_t align,float item_width,
+    float height,float r,TTF_Font *font,const char *const *items,size_t count,
+    unsigned track_color,unsigned selected_color,unsigned text_color,
+    unsigned long animation_time,
+    selector_callback_func callback,void *data){
+    if(item_width<=0.0f||height<=0.0f||font==NULL||count==0){
         return NULL;
     }
 
@@ -658,7 +817,7 @@ static widget_selector_t *selector_create_impl(void *parent,align_t align,float 
         height,
         NULL,
         selector_update,
-        NULL,
+        selector_clear,
         selector_mouse,
         align
     );
@@ -672,15 +831,38 @@ static widget_selector_t *selector_create_impl(void *parent,align_t align,float 
     selector->data=data;
     selector->item_count=count;
     selector->item_width=item_width;
+    selector->corner_radius=r;
     selector->from_x=0.0f;
     selector->to_x=0.0f;
     selector->last_left=0;
+    selector->font=font;
+    selector->item_height=height;
+    selector->text_color=text_color;
+    selector->track_color=track_color;
+    selector->selected_color=selected_color;
+    selector->animation_time=animation_time;
+
+    selector->items=calloc(count,sizeof(*selector->items));
+    if(selector->items==NULL){
+        delete_layout((layout_t *)selector);
+        return NULL;
+    }
+    for(size_t i=0;i<count;i++){
+        const char *text=items!=NULL?items[i]:NULL;
+        if(text!=NULL){
+            selector->items[i]=selector_strdup(text);
+            if(selector->items[i]==NULL){
+                delete_layout((layout_t *)selector);
+                return NULL;
+            }
+        }
+    }
 
     align_t zero=make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f);
     layout_animation_t *animation=create_layout_animation(
         selector,selector_animation,
-        draft_create_rrect(zero,width,height,height/2.0f,get_color(COLOR_SWITCH_OFF),0),
-        draft_create_rrect(zero,item_width,height,height/2.0f,get_color(COLOR_SWITCH_ON),0),
+        draft_create_rrect(zero,width,height,r>=0.0f?r:height/2.0f,track_color,0),
+        draft_create_rrect(zero,item_width,height,r>=0.0f?r:height/2.0f,selected_color,0),
         NULL
     );
     if(animation==NULL){
@@ -707,21 +889,66 @@ static widget_selector_t *selector_create_impl(void *parent,align_t align,float 
             delete_layout((layout_t *)selector);
             return NULL;
         }
-        label->text=draft_create_icon_with_text(
-            make_align(3,3,0,0,0.0f,0.0f,0.0f,0.0f),
-            font,
-            texts[i],
-            item_width,
-            height*ICON_TEXT_SCALE,
-            get_text_color(text_level)
-        );
-        if(label->text!=NULL){
-            label->text->parent=(sublayout_t *)&label->l;
-        }
+        selector_label_apply(selector,label,i);
     }
 
     selector_update(selector);
     return selector;
+}
+
+void set_selector_item(widget_selector_t *selector,size_t i,const char *text){
+    if(selector==NULL||i>=selector->item_count||selector->items==NULL){
+        return;
+    }
+
+    char *copy=selector_strdup(text);
+    if(text!=NULL&&copy==NULL){
+        return;
+    }
+    free(selector->items[i]);
+    selector->items[i]=copy;
+
+    selector_label_t *label=selector_label_at(selector,i);
+    if(label!=NULL){
+        selector_label_apply(selector,label,i);
+    }
+
+    selector_update(selector);
+    update_sons(selector);
+}
+
+void set_selector_item_width(widget_selector_t *selector,float width){
+    if(selector==NULL||width<=0.0f||selector->item_count==0){
+        return;
+    }
+
+    selector->item_width=width;
+    selector->l.l.width=width*(float)selector->item_count;
+
+    size_t index=0;
+    for(size_t i=0;i<selector->l.l.son_size;i++){
+        layout_t *son=selector->l.l.sons[i];
+        if(son==NULL||son->draw!=selector_label_draw){
+            continue;
+        }
+        selector_label_t *label=(selector_label_t *)son;
+        label->l.width=width;
+        label->l.align=make_align(1,3,0,1,
+            width*((float)index-(float)selector->item_count),0.0f,0.0f,1.0f);
+        selector_label_apply(selector,label,index);
+        index++;
+    }
+
+    layout_animation_t *animation=widget_find_animation(selector);
+    if(animation!=NULL){
+        animation->lasting=0;
+        animation->status=0;
+    }
+    selector->from_x=selector->l.l.x+(float)selector->now_button*width;
+    selector->to_x=selector->from_x;
+
+    selector_update(selector);
+    update_sons(selector);
 }
 
 widget_selector_t *widget_create_selector(void *parent,align_t align,float item_width,
@@ -730,30 +957,29 @@ widget_selector_t *widget_create_selector(void *parent,align_t align,float item_
         return NULL;
     }
 
+    darray_t(const char*) items;
+    da_init(&items);
+
     va_list arg;
     va_start(arg,data);
-    size_t count=0;
-    while(va_arg(arg,const char *)!=NULL){
-        count++;
+    const char *text=NULL;
+    while((text=va_arg(arg,const char *))!=NULL){
+        if(da_add(sizeof(text),&items,&text)!=0){
+            da_clear(&items);
+            va_end(arg);
+            return NULL;
+        }
     }
     va_end(arg);
-    if(count==0){
-        return NULL;
-    }
 
-    char **texts=malloc(count*sizeof(*texts));
-    if(texts==NULL){
+    if(items.size==0){
+        da_clear(&items);
         return NULL;
     }
-    va_start(arg,data);
-    for(size_t i=0;i<count;i++){
-        texts[i]=(char *)va_arg(arg,const char *);
-    }
-    va_end(arg);
 
     TTF_Font *font=obtain_font(get_font(TEXT_CONTEXT),get_text_size(TEXT_CONTEXT));
     if(font==NULL){
-        free(texts);
+        da_clear(&items);
         return NULL;
     }
 
@@ -766,9 +992,23 @@ widget_selector_t *widget_create_selector(void *parent,align_t align,float item_
         height=(float)line_height;
     }
 
-    widget_selector_t *selector=selector_create_impl(
-        parent,align,item_width,font,TEXT_CONTEXT,height,callback,data,texts,count);
-    free(texts);
+    widget_selector_t *selector=widget_create_raw_selector(
+        parent,
+        align,
+        item_width,
+        height,
+        height/2.0f,
+        font,
+        items.arr,
+        items.size,
+        get_color(COLOR_SWITCH_OFF),
+        get_color(COLOR_SWITCH_ON),
+        get_text_color(TEXT_CONTEXT),
+        get_theme()->switch_animation_time,
+        callback,
+        data
+    );
+    da_clear(&items);
     return selector;
 }
 
@@ -778,30 +1018,29 @@ widget_selector_t *widget_create_selector_title(void *parent,align_t align,float
         return NULL;
     }
 
+    darray_t(const char*) items;
+    da_init(&items);
+
     va_list arg;
     va_start(arg,data);
-    size_t count=0;
-    while(va_arg(arg,const char *)!=NULL){
-        count++;
+    const char *text=NULL;
+    while((text=va_arg(arg,const char *))!=NULL){
+        if(da_add(sizeof(text),&items,&text)!=0){
+            da_clear(&items);
+            va_end(arg);
+            return NULL;
+        }
     }
     va_end(arg);
-    if(count==0){
-        return NULL;
-    }
 
-    char **texts=malloc(count*sizeof(*texts));
-    if(texts==NULL){
+    if(items.size==0){
+        da_clear(&items);
         return NULL;
     }
-    va_start(arg,data);
-    for(size_t i=0;i<count;i++){
-        texts[i]=(char *)va_arg(arg,const char *);
-    }
-    va_end(arg);
 
     TTF_Font *font=obtain_font(get_font(TEXT_TITLE),get_text_size(TEXT_TITLE));
     if(font==NULL){
-        free(texts);
+        da_clear(&items);
         return NULL;
     }
 
@@ -813,9 +1052,23 @@ widget_selector_t *widget_create_selector_title(void *parent,align_t align,float
         height=get_theme()->button_height;
     }
 
-    widget_selector_t *selector=selector_create_impl(
-        parent,align,item_width,font,TEXT_TITLE,height,callback,data,texts,count);
-    free(texts);
+    widget_selector_t *selector=widget_create_raw_selector(
+        parent,
+        align,
+        item_width,
+        height,
+        height/2.0f,
+        font,
+        items.arr,
+        items.size,
+        get_color(COLOR_SWITCH_OFF),
+        get_color(COLOR_SWITCH_ON),
+        get_text_color(TEXT_TITLE),
+        get_theme()->switch_animation_time,
+        callback,
+        data
+    );
+    da_clear(&items);
     return selector;
 }
 
@@ -838,25 +1091,15 @@ static void tabs_show_page(widget_tabs_t *tabs,size_t index){
     }
 }
 
-static void tabs_selector_changed(size_t now,size_t from,void *data){
-    widget_tabs_t *tabs=data;
-    if(tabs==NULL){
-        return;
-    }
-
-    tabs_show_page(tabs,now);
-
-    if(tabs->callback!=NULL){
-        tabs->callback(now,from,tabs->data);
-    }
-}
-
 static void tabs_resize_selector(widget_tabs_t *tabs){
     if(tabs==NULL||tabs->selector==NULL||tabs->selector->item_count==0){
         return;
     }
 
     widget_selector_t *selector=tabs->selector;
+    if(selector->l.l.parent!=(sublayout_t *)tabs){
+        return;
+    }
     float item_width=tabs->l.l.width/(float)selector->item_count;
     if(item_width<=0.0f){
         return;
@@ -883,6 +1126,7 @@ static void tabs_resize_selector(widget_tabs_t *tabs){
         label->align=make_align(1,3,0,1,
             item_width*((float)label_index-(float)selector->item_count),
             0.0f,0.0f,1.0f);
+        selector_label_apply(selector,(selector_label_t *)label,label_index);
         label_index++;
     }
 
@@ -912,25 +1156,42 @@ static void tabs_update(void *p){
         }
     }
 
-    tabs_resize_selector(tabs);
-
-    /* 子布局的 align 只处理右/下/居中等模式，没有“贴父布局左上角”；
-     * 这里把 selector 和 content 固定到 tabs 的实际位置。 */
-    if(tabs->selector!=NULL){
+    /* 只有 orphan selector 才由 tabs 接管布局；有父布局的 selector
+     * 保持原来的位置和宽度。 */
+    if(tabs->selector!=NULL&&tabs->selector->l.l.parent==(sublayout_t *)tabs){
         tabs->selector->l.l.x=tabs->l.l.x;
         tabs->selector->l.l.y=tabs->l.l.y;
         tabs->selector->l.l.width=tabs->l.l.width;
+        tabs_resize_selector(tabs);
     }
+
     if(tabs->content!=NULL){
-        float header=tabs->selector!=NULL?tabs->selector->l.l.height:0.0f;
-        float content_height=tabs->l.l.height-header;
+        float top=tabs->l.l.y;
+        if(tabs->selector!=NULL){
+            float selector_bottom=tabs->selector->l.l.y+tabs->selector->l.l.height;
+            if(selector_bottom>top){
+                top=selector_bottom;
+            }
+        }
+        float content_height=tabs->l.l.y+tabs->l.l.height-top;
         if(content_height<0.0f){
             content_height=0.0f;
         }
         tabs->content->x=tabs->l.l.x;
-        tabs->content->y=tabs->l.l.y+header;
+        tabs->content->y=top;
         tabs->content->width=tabs->l.l.width;
         tabs->content->height=content_height;
+    }
+
+    /* selector 可能是外部创建的，不能覆盖它的 callback；这里检测 now_button
+     * 的变化并切换页面。选择器的鼠标处理发生在 update_sons 之前，所以同帧生效。 */
+    if(tabs->selector!=NULL&&tabs->selector->now_button!=tabs->now_page){
+        size_t from=tabs->now_page;
+        size_t now=tabs->selector->now_button;
+        tabs_show_page(tabs,now);
+        if(tabs->callback!=NULL){
+            tabs->callback(now,from,tabs->data);
+        }
     }
 }
 
@@ -1054,12 +1315,22 @@ void widget_tabs_select(widget_tabs_t *tabs,size_t index){
         return;
     }
 
-    if(tabs->selector!=NULL&&index<tabs->selector->item_count){
+    if(tabs->selector!=NULL){
+        if(index>=tabs->selector->item_count){
+            return;
+        }
         if(index==tabs->selector->now_button){
             tabs_show_page(tabs,index);
             return;
         }
+        size_t from=tabs->now_page;
         selector_select(tabs->selector,index);
+        if(tabs->selector->now_button==index){
+            tabs_show_page(tabs,index);
+            if(tabs->callback!=NULL){
+                tabs->callback(index,from,tabs->data);
+            }
+        }
         return;
     }
 
@@ -1071,28 +1342,7 @@ void widget_tabs_select(widget_tabs_t *tabs,size_t index){
 }
 
 widget_tabs_t *widget_create_tabs(void *parent,align_t align,widget_size_func get_size,
-    selector_callback_func callback,void *data,...){
-    va_list arg;
-    va_start(arg,data);
-    size_t count=0;
-    while(va_arg(arg,const char *)!=NULL){
-        count++;
-    }
-    va_end(arg);
-
-    char **texts=NULL;
-    if(count>0){
-        texts=malloc(count*sizeof(*texts));
-        if(texts==NULL){
-            return NULL;
-        }
-        va_start(arg,data);
-        for(size_t i=0;i<count;i++){
-            texts[i]=(char *)va_arg(arg,const char *);
-        }
-        va_end(arg);
-    }
-
+    widget_selector_t *selector,selector_callback_func callback,void *data){
     float width=0.0f;
     float height=0.0f;
     if(parent!=NULL){
@@ -1112,38 +1362,7 @@ widget_tabs_t *widget_create_tabs(void *parent,align_t align,widget_size_func ge
         }
     }
     if(width<=0.0f||height<=0.0f){
-        free(texts);
         return NULL;
-    }
-
-    float selector_height=0.0f;
-    float item_width=0.0f;
-    TTF_Font *font=NULL;
-    if(count>0){
-        /* tabs 使用大号选择器（TEXT_TITLE），和普通 selector 区分。 */
-        font=obtain_font(get_font(TEXT_TITLE),get_text_size(TEXT_TITLE));
-        if(font==NULL){
-            free(texts);
-            return NULL;
-        }
-
-        selector_height=(float)TTF_GetFontHeight(font);
-        if(selector_height<=0.0f){
-            selector_height=get_theme()->button_height;
-        }
-        if(get_theme()->button_height>selector_height){
-            selector_height=get_theme()->button_height;
-        }
-        if(selector_height<=0.0f||selector_height>=height){
-            free(texts);
-            return NULL;
-        }
-
-        item_width=width/(float)count;
-        if(item_width<=0.0f){
-            free(texts);
-            return NULL;
-        }
     }
 
     widget_tabs_t *tabs=(widget_tabs_t *)create_layout(
@@ -1158,59 +1377,38 @@ widget_tabs_t *widget_create_tabs(void *parent,align_t align,widget_size_func ge
         align
     );
     if(tabs==NULL){
-        free(texts);
         return NULL;
     }
 
     tabs->get_size=get_size;
     tabs->callback=callback;
     tabs->data=data;
-    tabs->now_page=0;
     tabs->pages=NULL;
     tabs->page_count=0;
-    tabs->selector=NULL;
     tabs->content=NULL;
+    tabs->selector=selector;
+    tabs->now_page=selector!=NULL?selector->now_button:0;
 
-    if(count>0){
-        align_t selector_align=make_align(0,0,1,0,0.0f,0.0f,1.0f,0.0f);
-        tabs->selector=selector_create_impl(
-            (layout_t *)tabs,
-            selector_align,
-            item_width,
-            font,
-            TEXT_TITLE,
-            selector_height,
-            tabs_selector_changed,
-            tabs,
-            texts,
-            count
-        );
-        free(texts);
-        texts=NULL;
-        if(tabs->selector==NULL){
+    if(selector!=NULL&&selector->l.l.parent==NULL){
+        if(!layout_attach((layout_t *)selector,(layout_t *)tabs)){
             delete_layout((layout_t *)tabs);
             return NULL;
         }
+        selector->l.l.align=make_align(0,0,1,0,0.0f,0.0f,1.0f,0.0f);
     }
 
-    align_t content_align;
-    if(selector_height>0.0f){
-        content_align=make_align(0,0,1,2,0.0f,selector_height,1.0f,-selector_height);
-    }else{
-        content_align=make_align(0,0,1,1,0.0f,0.0f,1.0f,1.0f);
-    }
+    align_t content_align=make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f);
     tabs->content=create_layout(
         sizeof(*tabs->content),
         (layout_t *)tabs,
         width,
-        height-selector_height,
+        height,
         NULL,
         layout_update,
         NULL,
         NULL,
         content_align
     );
-    free(texts);
     if(tabs->content==NULL){
         delete_layout((layout_t *)tabs);
         return NULL;
