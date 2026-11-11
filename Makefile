@@ -5,6 +5,8 @@
 #    make debug  带 ASan/UBSan 与调试信息编译
 #    make app    （macOS）生成 build/pacman-gui.app
 #    make compdb 生成 compile_commands.json（VS Code / clangd 用）
+#    make test-input 编译并运行输入框测试程序
+#    make OPT=-O3 LTO=1  开启链接时优化（也支持 -Os/-O2）
 #    make clean  清理构建产物
 #    make font   重新生成 build/pacman_pixel_font.c
 # ============================================================
@@ -38,9 +40,26 @@ HAVE_PKGCONFIG := $(shell command -v $(PKGCONF) >/dev/null 2>&1 && echo 1)
 # Homebrew 前缀：PATH 里没有 brew 时退回常见安装位置
 BREW_PREFIX ?= $(shell brew --prefix 2>/dev/null || (test -d /opt/homebrew && echo /opt/homebrew || echo /usr/local))
 
-CFLAGS  += -std=c99 -Wall -Wextra -Wshadow -O2 -g -MMD -MP
+OPT      ?= -O2
+LTO      ?= 0
+
+CFLAGS  += -std=c99 -Wall -Wextra -Wshadow $(OPT) -g -MMD -MP
 LDFLAGS +=
 LDLIBS  +=
+
+ifeq ($(LTO),1)
+  CFLAGS  += -flto
+  LDFLAGS += -flto
+endif
+
+# OPT/LTO/BUILD 改变时自动重建，避免把不同优化级别的 .o 混在一起。
+BUILD_FLAGS      := $(CC)|$(OPT)|$(LTO)|$(BUILD)
+BUILD_FLAGS_FILE := build/.build-flags
+BUILD_FLAGS_OLD  := $(shell cat $(BUILD_FLAGS_FILE) 2>/dev/null)
+ifneq ($(BUILD_FLAGS_OLD),$(BUILD_FLAGS))
+  $(info build flags changed; rebuilding objects)
+  $(shell mkdir -p build; rm -rf build/obj; printf '%s\n' '$(BUILD_FLAGS)' > $(BUILD_FLAGS_FILE))
+endif
 
 ifeq ($(UNAME_S),Darwin)
   # macOS 用系统 CoreText 解析字体，不依赖 fontconfig
@@ -90,7 +109,7 @@ CFLAGS  += -O0 -g3 -fsanitize=address,undefined
 LDFLAGS += -fsanitize=address,undefined
 endif
 
-.PHONY: all run debug clean font app run-app compdb
+.PHONY: all run debug clean font app run-app compdb test-input
 
 all: $(TARGET)
 
@@ -98,9 +117,27 @@ $(TARGET): $(OBJS)
 	@mkdir -p $(dir $@)
 	$(CC) $(OBJS) -o $@ $(LDFLAGS) $(LDLIBS)
 
+# 输入框测试程序：不包含 src/main.o，使用自己的 main
+TEST_INPUT      := build/input-test
+TEST_INPUT_SRC  := tests/input_test.c
+TEST_INPUT_OBJ  := build/obj/input_test.o
+TEST_INPUT_OBJS := $(filter-out build/obj/main.o,$(OBJS))
+
+$(TEST_INPUT_OBJ): $(TEST_INPUT_SRC)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -I$(SRCDIR) -c $< -o $@
+
+$(TEST_INPUT): $(TEST_INPUT_OBJ) $(TEST_INPUT_OBJS)
+	@mkdir -p $(dir $@)
+	$(CC) $(TEST_INPUT_OBJ) $(TEST_INPUT_OBJS) -o $@ $(LDFLAGS) $(LDLIBS)
+
+test-input: $(TEST_INPUT)
+	./$(TEST_INPUT)
+
 build/obj/%.o: $(SRCDIR)/%.c
 	@mkdir -p $(dir $@) $(COMPDB_DIR)
 	$(CC) $(CFLAGS) $(COMPDB_FLAG) -c $< -o $@
+
 
 $(FONT_C): $(FONT_TTF) tools/ttf_to_c.py
 	@mkdir -p $(dir $(FONT_C))

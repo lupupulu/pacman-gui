@@ -13,87 +13,6 @@
 #define TRUE 1
 #define FALSE 0
 
-void update_mouse(const SDL_Event *ev){
-    if(ev->type!=SDL_EVENT_MOUSE_MOTION){
-        return;
-    }
-    if(get_window()==NULL||ev->motion.windowID!=SDL_GetWindowID(get_window())){
-        return;   /* 不是本窗口的移动，不更新 */
-    }
-    set_mouse_pos(ev->motion.x,ev->motion.y);
-}
-
-/* 按下/回弹时把五个按键状态交给 gui，坐标各用各的事件坐标 */
-void update_mouse_button(const SDL_Event *ev){
-    if(ev->type!=SDL_EVENT_MOUSE_BUTTON_DOWN&&ev->type!=SDL_EVENT_MOUSE_BUTTON_UP){
-        return;
-    }
-    if(get_window()==NULL||ev->button.windowID!=SDL_GetWindowID(get_window())){
-        return;   /* 不是本窗口的按键 */
-    }
-
-    set_mouse_pos(ev->button.x,ev->button.y);
-
-    SDL_MouseButtonFlags m=SDL_GetMouseState(NULL,NULL);
-    set_mouse_button((m&SDL_BUTTON_LMASK)!=0,
-                     (m&SDL_BUTTON_MMASK)!=0,
-                     (m&SDL_BUTTON_RMASK)!=0,
-                     (m&SDL_BUTTON_X1MASK)!=0,
-                     (m&SDL_BUTTON_X2MASK)!=0);
-}
-
-/* 滚轮和触摸板滚动都走 SDL_EVENT_MOUSE_WHEEL，y 正方向是滚轮向上 */
-void update_mouse_wheel(const SDL_Event *ev){
-    if(ev->type!=SDL_EVENT_MOUSE_WHEEL){
-        return;
-    }
-    if(get_window()==NULL||ev->wheel.windowID!=SDL_GetWindowID(get_window())){
-        return;   /* 不是本窗口的滚轮 */
-    }
-    set_mouse_pos(ev->wheel.mouse_x,ev->wheel.mouse_y);
-    set_mouse_wheel(ev->wheel.x,ev->wheel.y);
-}
-
-/* macOS 在拖动窗口边缘时会进入系统的 modal resize loop，
- * 普通 while + SDL_PollEvent 会被卡住，等缩放结束才回到主循环。
- * SDL 在 live resize 期间会定时发送 SDL_EVENT_WINDOW_EXPOSED；
- * 用 event watch 在事件入队时直接画一帧，才能边缩放边重排/重绘。
- * 参考 SDL FAQ: Frozen window。 */
-static void render_frame(void){
-    static bool rendering=false;
-    SDL_Renderer *renderer=get_renderer();
-    if(renderer==NULL||rendering){
-        return;
-    }
-    rendering=true;
-
-    unsigned background=get_color(COLOR_MAIN);
-    SDL_SetRenderDrawColor(renderer,
-        (background>>24)&0xFF,(background>>16)&0xFF,
-        (background>>8)&0xFF,background&0xFF);
-    SDL_RenderClear(renderer);
-
-    update_root();
-    draw_root();
-
-    SDL_RenderPresent(renderer);
-    rendering=false;
-}
-
-static bool SDLCALL live_resize_event_watch(void *userdata,SDL_Event *event){
-    (void)userdata;
-    if(event->type!=SDL_EVENT_WINDOW_EXPOSED){
-        return true;
-    }
-
-    SDL_Window *window=get_window();
-    if(window!=NULL&&event->window.windowID==SDL_GetWindowID(window)){
-        render_frame();
-    }
-    return true;
-}
-
-
 /* 仅用于绘制测试的软件包数据；安装/删除/更新逻辑尚未实现。 */
 static layout_list_t *create_test_package_list(layout_t *parent){
     static char *maintainers_alice[]={"Alice",NULL};
@@ -238,9 +157,7 @@ int main(int argc,char *argv[]){
         get_root_layout(),
         zero,
         main_tabs_size,
-        selector,
-        NULL,
-        NULL
+        selector
     );
     if(tabs==NULL||selector==NULL||package_list==NULL||installed_page==NULL||settings_page==NULL){
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("Failed to create main tabs"));
@@ -254,36 +171,21 @@ int main(int argc,char *argv[]){
     }
     update_root();
 
-    SDL_AddEventWatch(live_resize_event_watch,NULL);
+    sdlgui_enable_live_resize();
 
     int running=TRUE;
     while(running){
         SDL_Event ev;
         while(SDL_PollEvent(&ev)){
-            if(ev.type==SDL_EVENT_QUIT){
+            if(!sdlgui_handle_event(&ev)){
                 running=FALSE;
-            }else if(ev.type==SDL_EVENT_KEY_DOWN&&ev.key.key==SDLK_ESCAPE){
-                running=FALSE;
-            }else if(ev.type==SDL_EVENT_WINDOW_RESIZED
-                  || ev.type==SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED
-                  || ev.type==SDL_EVENT_WINDOW_DISPLAY_CHANGED){
-                update_root();
-            }else if(ev.type==SDL_EVENT_SYSTEM_THEME_CHANGED){
-                theme_select_system();
-            }else if(ev.type==SDL_EVENT_MOUSE_MOTION){
-                update_mouse(&ev);
-            }else if(ev.type==SDL_EVENT_MOUSE_BUTTON_DOWN
-                  || ev.type==SDL_EVENT_MOUSE_BUTTON_UP){
-                update_mouse_button(&ev);
-            }else if(ev.type==SDL_EVENT_MOUSE_WHEEL){
-                update_mouse_wheel(&ev);
             }
         }
 
-        render_frame();
+        sdlgui_render_frame();
     }
 
-    SDL_RemoveEventWatch(live_resize_event_watch,NULL);
+    sdlgui_disable_live_resize();
 
     sdlgui_quit();
     return 0;

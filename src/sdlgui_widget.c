@@ -1091,6 +1091,20 @@ static void tabs_show_page(widget_tabs_t *tabs,size_t index){
     }
 }
 
+/* tabs 接管 selector 的 callback：先切页面，再转发给 selector 原来的 callback。 */
+static void tabs_selector_callback(size_t now,size_t from,void *data){
+    widget_tabs_t *tabs=data;
+    if(tabs==NULL){
+        return;
+    }
+
+    tabs_show_page(tabs,now);
+
+    if(tabs->selector_callback!=NULL){
+        tabs->selector_callback(now,from,tabs->selector_data);
+    }
+}
+
 static void tabs_resize_selector(widget_tabs_t *tabs){
     if(tabs==NULL||tabs->selector==NULL||tabs->selector->item_count==0){
         return;
@@ -1100,7 +1114,7 @@ static void tabs_resize_selector(widget_tabs_t *tabs){
     if(selector->l.l.parent!=(sublayout_t *)tabs){
         return;
     }
-    float item_width=tabs->l.l.width/(float)selector->item_count;
+    float item_width=tabs->l.width/(float)selector->item_count;
     if(item_width<=0.0f){
         return;
     }
@@ -1114,7 +1128,7 @@ static void tabs_resize_selector(widget_tabs_t *tabs){
     }
 
     selector->item_width=item_width;
-    selector->l.l.width=tabs->l.l.width;
+    selector->l.l.width=tabs->l.width;
 
     size_t label_index=0;
     for(size_t i=0;i<selector->l.l.son_size;i++){
@@ -1142,57 +1156,52 @@ static void tabs_update(void *p){
     if(tabs==NULL){
         return;
     }
-    layout_update(&tabs->l.l);
+    layout_update(&tabs->l);
 
     if(tabs->get_size!=NULL){
-        float width=tabs->l.l.width;
-        float height=tabs->l.l.height;
+        float width=tabs->l.width;
+        float height=tabs->l.height;
         tabs->get_size(&width,&height);
         if(width>0.0f){
-            tabs->l.l.width=width;
+            tabs->l.width=width;
         }
         if(height>0.0f){
-            tabs->l.l.height=height;
+            tabs->l.height=height;
         }
     }
 
     /* 只有 orphan selector 才由 tabs 接管布局；有父布局的 selector
      * 保持原来的位置和宽度。 */
     if(tabs->selector!=NULL&&tabs->selector->l.l.parent==(sublayout_t *)tabs){
-        tabs->selector->l.l.x=tabs->l.l.x;
-        tabs->selector->l.l.y=tabs->l.l.y;
-        tabs->selector->l.l.width=tabs->l.l.width;
+        tabs->selector->l.l.x=tabs->l.x;
+        tabs->selector->l.l.y=tabs->l.y;
+        tabs->selector->l.l.width=tabs->l.width;
         tabs_resize_selector(tabs);
     }
 
-    if(tabs->content!=NULL){
-        float top=tabs->l.l.y;
-        if(tabs->selector!=NULL){
-            float selector_bottom=tabs->selector->l.l.y+tabs->selector->l.l.height;
-            if(selector_bottom>top){
-                top=selector_bottom;
-            }
+    float top=tabs->l.y;
+    if(tabs->selector!=NULL){
+        float selector_bottom=tabs->selector->l.l.y+tabs->selector->l.l.height;
+        if(selector_bottom>top){
+            top=selector_bottom;
         }
-        float content_height=tabs->l.l.y+tabs->l.l.height-top;
-        if(content_height<0.0f){
-            content_height=0.0f;
+    }
+    float content_height=tabs->l.y+tabs->l.height-top;
+    if(content_height<0.0f){
+        content_height=0.0f;
+    }
+    for(size_t i=0;i<tabs->page_count;i++){
+        layout_t *page=tabs->pages!=NULL?tabs->pages[i]:NULL;
+        if(page==NULL){
+            continue;
         }
-        tabs->content->x=tabs->l.l.x;
-        tabs->content->y=top;
-        tabs->content->width=tabs->l.l.width;
-        tabs->content->height=content_height;
+        page->align=make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f);
+        page->x=tabs->l.x;
+        page->y=top;
+        page->width=tabs->l.width;
+        page->height=content_height;
     }
 
-    /* selector 可能是外部创建的，不能覆盖它的 callback；这里检测 now_button
-     * 的变化并切换页面。选择器的鼠标处理发生在 update_sons 之前，所以同帧生效。 */
-    if(tabs->selector!=NULL&&tabs->selector->now_button!=tabs->now_page){
-        size_t from=tabs->now_page;
-        size_t now=tabs->selector->now_button;
-        tabs_show_page(tabs,now);
-        if(tabs->callback!=NULL){
-            tabs->callback(now,from,tabs->data);
-        }
-    }
 }
 
 static void tabs_clear(void *p){
@@ -1201,24 +1210,33 @@ static void tabs_clear(void *p){
         return;
     }
 
-    /* 页面本身是 content 的子布局，delete_layout() 已经先删掉它们；
+    /* 外部 selector 不归 tabs 所有，删除 tabs 时恢复它原来的 callback。
+     * 如果 selector 是 tabs 的子布局，它已经先被 delete_layout() 删除，不能再访问。 */
+    if(tabs->selector!=NULL&&!tabs->selector_attached){
+        if(tabs->selector->callback==tabs_selector_callback&&
+           tabs->selector->data==tabs){
+            tabs->selector->callback=tabs->selector_callback;
+            tabs->selector->data=tabs->selector_data;
+        }
+    }
+
+    /* 页面是 tabs 的直接子布局，delete_layout() 已经先删掉它们；
      * 这里只释放页面指针数组。 */
     free(tabs->pages);
     tabs->pages=NULL;
     tabs->page_count=0;
     tabs->selector=NULL;
-    tabs->content=NULL;
 }
 
 static int tabs_attach_page(widget_tabs_t *tabs,layout_t *page,size_t index){
-    if(tabs==NULL||tabs->content==NULL||page==NULL){
+    if(tabs==NULL||page==NULL){
         return 0;
     }
-    if(!layout_attach(page,tabs->content)){
+    if(!layout_attach(page,(layout_t *)tabs)){
         return 0;
     }
 
-    page->align=make_align(3,3,1,1,0.0f,0.0f,1.0f,1.0f);
+    page->align=make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f);
     unsigned selected=(index==tabs->now_page)?1u:0u;
     page->enable=selected;
     page->active=selected;
@@ -1226,7 +1244,7 @@ static int tabs_attach_page(widget_tabs_t *tabs,layout_t *page,size_t index){
 }
 
 void widget_set_tabs(widget_tabs_t *tabs,void *l,size_t n){
-    if(tabs==NULL||tabs->content==NULL){
+    if(tabs==NULL){
         return;
     }
     layout_t **new_pages=(layout_t **)l;
@@ -1269,10 +1287,11 @@ void widget_set_tabs(widget_tabs_t *tabs,void *l,size_t n){
     }
 
     tabs_show_page(tabs,tabs->now_page);
+    tabs_update(tabs);
 }
 
 void widget_set_tab(widget_tabs_t *tabs,void *l,size_t index){
-    if(tabs==NULL||tabs->content==NULL){
+    if(tabs==NULL){
         return;
     }
 
@@ -1308,6 +1327,7 @@ void widget_set_tab(widget_tabs_t *tabs,void *l,size_t index){
         SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
                     "widget_set_tab: failed to attach page %zu",index);
     }
+    tabs_update(tabs);
 }
 
 void widget_tabs_select(widget_tabs_t *tabs,size_t index){
@@ -1323,26 +1343,19 @@ void widget_tabs_select(widget_tabs_t *tabs,size_t index){
             tabs_show_page(tabs,index);
             return;
         }
-        size_t from=tabs->now_page;
         selector_select(tabs->selector,index);
-        if(tabs->selector->now_button==index){
-            tabs_show_page(tabs,index);
-            if(tabs->callback!=NULL){
-                tabs->callback(index,from,tabs->data);
-            }
-        }
+        tabs_show_page(tabs,index);
         return;
     }
 
-    size_t from=tabs->now_page;
     tabs_show_page(tabs,index);
-    if(tabs->callback!=NULL){
-        tabs->callback(index,from,tabs->data);
-    }
 }
 
-widget_tabs_t *widget_create_tabs(void *parent,align_t align,widget_size_func get_size,
-    widget_selector_t *selector,selector_callback_func callback,void *data){
+widget_tabs_t *widget_create_tabs(void *parent,align_t align,widget_size_func get_size,widget_selector_t *selector){
+    if(selector==NULL){
+        return NULL;
+    }
+
     float width=0.0f;
     float height=0.0f;
     if(parent!=NULL){
@@ -1381,38 +1394,28 @@ widget_tabs_t *widget_create_tabs(void *parent,align_t align,widget_size_func ge
     }
 
     tabs->get_size=get_size;
-    tabs->callback=callback;
-    tabs->data=data;
     tabs->pages=NULL;
     tabs->page_count=0;
-    tabs->content=NULL;
     tabs->selector=selector;
+    tabs->selector_callback=selector!=NULL?selector->callback:NULL;
+    tabs->selector_data=selector!=NULL?selector->data:NULL;
+    tabs->selector_attached=0;
     tabs->now_page=selector!=NULL?selector->now_button:0;
 
-    if(selector!=NULL&&selector->l.l.parent==NULL){
-        if(!layout_attach((layout_t *)selector,(layout_t *)tabs)){
-            delete_layout((layout_t *)tabs);
+    if(selector->l.l.parent==NULL){
+        if(!layout_attach((layout_t*)selector,(layout_t*)tabs)){
+            delete_layout((layout_t*)tabs);
             return NULL;
         }
         selector->l.l.align=make_align(0,0,1,0,0.0f,0.0f,1.0f,0.0f);
+        tabs->selector_attached=1;
+    }else if(selector->l.l.parent==(sublayout_t *)tabs){
+        tabs->selector_attached=1;
     }
 
-    align_t content_align=make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f);
-    tabs->content=create_layout(
-        sizeof(*tabs->content),
-        (layout_t *)tabs,
-        width,
-        height,
-        NULL,
-        layout_update,
-        NULL,
-        NULL,
-        content_align
-    );
-    if(tabs->content==NULL){
-        delete_layout((layout_t *)tabs);
-        return NULL;
-    }
+    /* 保存原 callback 后覆盖为 tabs 的转发函数。 */
+    selector->callback=tabs_selector_callback;
+    selector->data=tabs;
 
     return tabs;
 }

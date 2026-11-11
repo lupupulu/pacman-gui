@@ -176,6 +176,11 @@ static float mouse_pos[]={0,0};   /* 鼠标在窗口内的位置 */
 static int mouse_buttons[]={0,0,0,0,0};   /* 左 中 右 X1 X2，1=按下 0=未按下 */
 static float mouse_wheel[]={0.0f,0.0f};   /* 两次 update 之间累积的滚动增量 */
 
+static layout_input_t *focused_input=NULL;
+static layout_input_t *input_hover=NULL;
+static SDL_Cursor *input_text_cursor=NULL;
+static int input_last_left=0;
+
 
 
 void set_mouse_pos(float x,float y){
@@ -434,6 +439,13 @@ void sdlgui_init(const char *title,int width,int height,const char *iconpath,con
 }
 void sdlgui_quit(void){
     delete_layout(&root);
+    if(input_text_cursor!=NULL){
+        SDL_SetCursor(SDL_GetDefaultCursor());
+        SDL_DestroyCursor(input_text_cursor);
+        input_text_cursor=NULL;
+    }
+    focused_input=NULL;
+    input_hover=NULL;
     theme_quit();
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
@@ -705,20 +717,70 @@ void update_sons(void *p){
     }
 }
 
-void layout_mouse(void *p){
-    layout_t *l=p;
+static int layout_contains_mouse(const layout_t *l){
+    if(l==NULL||l->width<0.0f||l->height<0.0f){
+        return 0;
+    }
+    float mx=get_mouse_x();
+    float my=get_mouse_y();
+    return mx>=l->x&&mx<=l->x+l->width&&my>=l->y&&my<=l->y+l->height;
+}
 
-    layout_t **son=l->sons;
-    for(size_t i=0;i<l->son_size;i++){
-        if(!son[i]->enable||!son[i]->active){
-            continue;
-        }
-        layout_mouse(son[i]);
-        if(son[i]->mouse){
-            son[i]->mouse(son[i]);
-        }
+/* 派发一个子布局的鼠标更新：
+ * - 鼠标在子布局内：正常递归/调用 mouse
+ * - 刚离开：额外调用一次，让 hover/按下状态能清掉
+ * - 离开时左键仍按住：继续跟踪，直到松开；避免拖拽状态卡住
+ * 其余情况不发送更新。 */
+static void layout_mouse_dispatch(layout_t *son){
+    if(son==NULL||!son->enable||!son->active){
+        return;
+    }
+
+    int was_inside=son->mouse_inside;
+    int inside=layout_contains_mouse(son);
+    son->mouse_inside=inside;
+
+    int tracking=son->mouse_tracking;
+    int button_down=mouse_buttons[0]!=0;
+    if(!inside&&!was_inside&&!tracking){
+        return;
+    }
+
+    layout_mouse(son);
+    if(son->mouse){
+        son->mouse(son);
+    }
+
+    if(inside){
+        son->mouse_tracking=0;
+    }else if(was_inside&&button_down){
+        son->mouse_tracking=1;
+    }else if(!button_down){
+        son->mouse_tracking=0;
     }
 }
+
+void layout_mouse(void *p){
+    layout_t *l=p;
+    if(l==NULL){
+        return;
+    }
+
+    if(l==&root){
+        int left=mouse_buttons[0]!=0;
+        if(left&&!input_last_left&&focused_input!=NULL&&
+           !layout_contains_mouse(&focused_input->l)){
+            layout_input_blur();
+        }
+        input_last_left=left;
+    }
+
+    for(size_t i=0;i<l->son_size;i++){
+        layout_mouse_dispatch(l->sons[i]);
+    }
+}
+
+
 
 void layout_update(void *p){
     sublayout_t *l=p;
@@ -2877,12 +2939,11 @@ void list_mouse(void *p){
 
     layout_update_ancestors((sublayout_t *)&l->l);
 
-    /* 鼠标不在 list 内时不处理滚轮，也不把事件交给子布局 */
-    if(!list_mouse_inside(l)){
-        return;
+    int inside=list_mouse_inside(l);
+    if(inside){
+        list_handle_wheel(l);
     }
 
-    list_handle_wheel(l);
     list_begin(l);
 
     for(size_t i=l->i;i<l->sons.size;i++){
@@ -2890,19 +2951,645 @@ void list_mouse(void *p){
         if(list_item_after_view(l,item)){
             break;
         }
-        if(list_item_before_view(l,item)||!item->enable||!item->active){
+        if(list_item_before_view(l,item)){
             continue;
         }
-        if(item->mouse!=NULL){
-            item->mouse(item);
-        }
-        layout_mouse(item);
+        layout_mouse_dispatch(item);
     }
     list_end(l);
 
     /* 只有可滚动的 list 才消费滚轮；can_be_slided=0 时留给其他布局 */
-    if(l->can_be_slided){
+    if(inside&&l->can_be_slided){
         mouse_wheel[0]=0.0f;
         mouse_wheel[1]=0.0f;
     }
+}
+
+/* ---- input layout：鼠标形状/焦点/键盘编辑，文字 draft 只绘制文字 ---- */
+
+static int draft_text_build_cache(draft_text_t *d);
+static void input_sync_ime_area(layout_input_t *input);
+
+#define INPUT_SCROLL_STEP 48.0f
+
+/* 截断到 max_bytes，并保证不切断 UTF-8 字符。max_bytes=0 表示不限制。 */
+static size_t input_limit_prefix(const char *text,size_t length,size_t max_bytes){
+    if(text==NULL||max_bytes==0||length<=max_bytes){
+        return length;
+    }
+    size_t limit=max_bytes;
+    while(limit>0&&((unsigned char)text[limit]&0xC0)==0x80){
+        limit--;
+    }
+    return limit;
+}
+
+static void input_measure_text(layout_input_t *input){
+    if(input==NULL){
+        return;
+    }
+    input->text_width=0.0f;
+    if(input->font==NULL||input->text==NULL||input->length==0){
+        return;
+    }
+
+    int width=0;
+    int height=0;
+    if(TTF_GetStringSize(input->font,input->text,input->length,&width,&height)&&width>0){
+        float scale=sdlgui_get_scale();
+        if(scale<=0.0f){
+            scale=1.0f;
+        }
+        input->text_width=(float)width/scale;
+    }else if(input->text_draft!=NULL){
+        input->text_width=input->text_draft->width;
+    }
+}
+
+static void input_clamp_scroll(layout_input_t *input){
+    if(input==NULL){
+        return;
+    }
+    float max_scroll=input->text_width-input->l.width;
+    if(max_scroll<0.0f){
+        max_scroll=0.0f;
+    }
+    if(input->text_scroll<0.0f){
+        input->text_scroll=0.0f;
+    }else if(input->text_scroll>max_scroll){
+        input->text_scroll=max_scroll;
+    }
+}
+
+static void input_position_text(layout_input_t *input){
+    if(input==NULL||input->text_draft==NULL){
+        return;
+    }
+
+    float scale=sdlgui_get_scale();
+    if(scale<=0.0f){
+        scale=1.0f;
+    }
+    float line_height=input->font!=NULL?(float)TTF_GetFontHeight(input->font)/scale:0.0f;
+
+    input->text_draft->x=input->l.x-input->text_scroll;
+    input->text_draft->y=input->l.y;
+    if(input->text_draft->height>0.0f){
+        input->text_draft->y+=(input->l.height-input->text_draft->height)/2.0f;
+    }else if(line_height>0.0f){
+        input->text_draft->y+=(input->l.height-line_height)/2.0f;
+    }
+}
+
+static int input_trim_to_limit(layout_input_t *input){
+    if(input==NULL||input->max_bytes==0||input->length<=input->max_bytes){
+        return 0;
+    }
+
+    size_t length=input_limit_prefix(input->text,input->length,input->max_bytes);
+    input->length=length;
+    input->text[length]='\0';
+    if(input->cursor>length){
+        input->cursor=length;
+    }
+    return 1;
+}
+
+static void input_rebuild_text(layout_input_t *input){
+    if(input==NULL){
+        return;
+    }
+
+    if(input->text_draft!=NULL){
+        input->text_draft->context=input->text;
+        input->text_draft->can_enter=0;
+        input->text_draft->can_change=0;
+        draft_text_clear(input->text_draft);
+        draft_text_build_cache(input->text_draft);
+    }
+
+    input_measure_text(input);
+    input_clamp_scroll(input);
+    input_position_text(input);
+}
+
+static int input_reserve(layout_input_t *input,size_t need){
+    if(input==NULL){
+        return 0;
+    }
+    if(need<=input->capacity){
+        return 1;
+    }
+
+    size_t capacity=input->capacity>0?input->capacity:32;
+    while(capacity<need){
+        if(capacity>SIZE_MAX/2){
+            capacity=need;
+            break;
+        }
+        capacity*=2;
+    }
+
+    char *text=realloc(input->text,capacity);
+    if(text==NULL){
+        return 0;
+    }
+    input->text=text;
+    input->capacity=capacity;
+    return 1;
+}
+
+static size_t input_utf8_prev(const char *text,size_t at){
+    if(text==NULL||at==0){
+        return 0;
+    }
+    at--;
+    while(at>0&&((unsigned char)text[at]&0xC0)==0x80){
+        at--;
+    }
+    return at;
+}
+
+static size_t input_utf8_next(const char *text,size_t length,size_t at){
+    if(text==NULL||at>=length){
+        return length;
+    }
+    at++;
+    while(at<length&&((unsigned char)text[at]&0xC0)==0x80){
+        at++;
+    }
+    return at;
+}
+
+static int input_insert(layout_input_t *input,const char *text){
+    if(input==NULL){
+        return 0;
+    }
+
+    int trimmed=input_trim_to_limit(input);
+
+    size_t add=(text!=NULL)?strlen(text):0;
+    if(input->max_bytes>0&&add>0){
+        size_t available=input->max_bytes-input->length;
+        if(add>available){
+            add=available>0?input_limit_prefix(text,add,available):0;
+        }
+    }
+
+    if(add==0){
+        if(trimmed){
+            input_rebuild_text(input);
+        }
+        return 1;
+    }
+
+    if(!input_reserve(input,input->length+add+1)){
+        return 0;
+    }
+
+    memmove(input->text+input->cursor+add,
+        input->text+input->cursor,
+        input->length-input->cursor+1);
+    memcpy(input->text+input->cursor,text,add);
+    input->length+=add;
+    input->cursor+=add;
+    input_rebuild_text(input);
+    return 1;
+}
+
+static void input_clear(void *p){
+    layout_input_t *input=p;
+    if(input==NULL){
+        return;
+    }
+
+    if(focused_input==input){
+        layout_input_blur();
+    }
+    if(input_hover==input){
+        SDL_SetCursor(SDL_GetDefaultCursor());
+        input_hover=NULL;
+    }
+
+    if(input->text_draft!=NULL){
+        draft_text_clear(input->text_draft);
+        free(input->text_draft);
+        input->text_draft=NULL;
+    }
+
+    free(input->text);
+    input->text=NULL;
+    input->length=0;
+    input->capacity=0;
+    input->cursor=0;
+    input->text_width=0.0f;
+    input->text_scroll=0.0f;
+}
+
+static void input_mouse(void *p){
+    layout_input_t *input=p;
+    if(input==NULL){
+        return;
+    }
+
+    int inside=layout_contains_mouse(&input->l);
+    int left=get_mouse_left();
+
+    if(inside){
+        if(input_hover!=input){
+            if(input_text_cursor==NULL){
+                input_text_cursor=SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_TEXT);
+            }
+            if(input_text_cursor!=NULL){
+                SDL_SetCursor(input_text_cursor);
+            }
+            input_hover=input;
+        }
+        if(left&&!input->last_left){
+            layout_input_focus(input);
+        }
+
+        if(input->text_width>input->l.width&&input->l.width>0.0f){
+            float wheel=get_mouse_wheel_x();
+            if(wheel!=0.0f){
+                input->text_scroll+=wheel*INPUT_SCROLL_STEP;
+                input_clamp_scroll(input);
+                mouse_wheel[0]=0.0f;
+                input_position_text(input);
+                input_sync_ime_area(input);
+            }
+        }
+    }else if(input_hover==input){
+        SDL_SetCursor(SDL_GetDefaultCursor());
+        input_hover=NULL;
+    }
+
+    input->last_left=left?1:0;
+}
+
+static float input_prefix_width(const layout_input_t *input){
+    if(input==NULL||input->font==NULL||input->text==NULL||input->cursor==0){
+        return 0.0f;
+    }
+
+    /* TTF_GetStringSize(...,0,...) 会测量整段字符串，传入 0 会得到
+     * “光标在末尾”的宽度，必须单独处理 cursor==0。 */
+    int width=0;
+    int height=0;
+    if(!TTF_GetStringSize(input->font,input->text,input->cursor,&width,&height)||width<=0){
+        return 0.0f;
+    }
+
+    float scale=sdlgui_get_scale();
+    if(scale<=0.0f){
+        scale=1.0f;
+    }
+    return (float)width/scale;
+}
+
+/* 把 IME/候选窗的位置同步到输入框和当前光标。
+ * SDL3 的 SDL_SetTextInputArea() 会交给平台输入法使用；
+ * rect 是窗口逻辑坐标，cursor 是相对 rect.x 的偏移。 */
+static void input_sync_ime_area(layout_input_t *input){
+    SDL_Window *w=get_window();
+    if(input==NULL||!input->focused||w==NULL){
+        return;
+    }
+
+    /* 把区域缩到光标所在的小矩形。macOS 的 SDL Cocoa 后端直接用这个
+     * rect 决定候选窗位置，不读取 cursor 偏移；给整块输入框会让候选窗
+     * 停在输入框左下角，所以这里传光标位置。 */
+    float caret_x=input->l.x+input_prefix_width(input)-input->text_scroll;
+    if(caret_x<input->l.x){
+        caret_x=input->l.x;
+    }
+    if(caret_x>input->l.x+input->l.width){
+        caret_x=input->l.x+input->l.width;
+    }
+
+    float scale=sdlgui_get_scale();
+    if(scale<=0.0f){
+        scale=1.0f;
+    }
+    float line_height=input->font!=NULL?(float)TTF_GetFontHeight(input->font)/scale:0.0f;
+    if(line_height<=0.0f){
+        line_height=input->l.height;
+    }
+    if(line_height>input->l.height){
+        line_height=input->l.height;
+    }
+
+    SDL_Rect area={
+        (int)SDL_floorf(caret_x),
+        (int)SDL_floorf(input->l.y+(input->l.height-line_height)/2.0f),
+        1,
+        (int)SDL_ceilf(line_height)
+    };
+    SDL_SetTextInputArea(w,&area,0);
+}
+
+void layout_input_focus(layout_input_t *input){
+    if(input==NULL||focused_input==input){
+        return;
+    }
+
+    if(focused_input!=NULL){
+        focused_input->focused=0;
+    }
+    focused_input=input;
+    input->focused=1;
+
+    if(get_window()!=NULL){
+        SDL_StartTextInput(get_window());
+        input_sync_ime_area(input);
+    }
+}
+
+void layout_input_blur(void){
+    if(focused_input==NULL){
+        return;
+    }
+
+    focused_input->focused=0;
+    focused_input=NULL;
+
+    if(get_window()!=NULL){
+        SDL_SetTextInputArea(get_window(),NULL,0);
+        SDL_StopTextInput(get_window());
+    }
+}
+
+const char *layout_input_text(const layout_input_t *input){
+    if(input==NULL||input->text==NULL){
+        return "";
+    }
+    return input->text;
+}
+
+size_t layout_input_cursor(const layout_input_t *input){
+    return input!=NULL?input->cursor:0;
+}
+
+int layout_input_is_focused(const layout_input_t *input){
+    return input!=NULL&&input->focused;
+}
+
+int layout_input_event(const SDL_Event *event){
+    if(event==NULL||focused_input==NULL){
+        return 0;
+    }
+
+    layout_input_t *input=focused_input;
+
+    if(event->type==SDL_EVENT_TEXT_INPUT){
+        input_insert(input,event->text.text);
+        return 1;
+    }
+    if(event->type!=SDL_EVENT_KEY_DOWN){
+        return 0;
+    }
+
+    switch(event->key.key){
+    case SDLK_ESCAPE:
+        layout_input_blur();
+        return 1;
+    case SDLK_RETURN:
+    case SDLK_KP_ENTER:
+        if(input->callback!=NULL){
+            input->callback(layout_input_text(input),input->data);
+        }
+        return 1;
+    case SDLK_BACKSPACE:
+        if(input->cursor>0){
+            size_t prev=input_utf8_prev(input->text,input->cursor);
+            memmove(input->text+prev,
+                input->text+input->cursor,
+                input->length-input->cursor+1);
+            input->length-=input->cursor-prev;
+            input->cursor=prev;
+            input_rebuild_text(input);
+        }
+        return 1;
+    case SDLK_DELETE:
+        if(input->cursor<input->length){
+            size_t next=input_utf8_next(input->text,input->length,input->cursor);
+            memmove(input->text+input->cursor,
+                input->text+next,
+                input->length-next+1);
+            input->length-=next-input->cursor;
+            input_rebuild_text(input);
+        }
+        return 1;
+    case SDLK_LEFT:
+        input->cursor=input_utf8_prev(input->text,input->cursor);
+        return 1;
+    case SDLK_RIGHT:
+        input->cursor=input_utf8_next(input->text,input->length,input->cursor);
+        return 1;
+    case SDLK_HOME:
+        input->cursor=0;
+        return 1;
+    case SDLK_END:
+        input->cursor=input->length;
+        return 1;
+    case SDLK_V:
+        if((event->key.mod&(SDL_KMOD_CTRL|SDL_KMOD_GUI))!=0){
+            char *clipboard=SDL_GetClipboardText();
+            if(clipboard!=NULL){
+                input_insert(input,clipboard);
+                SDL_free(clipboard);
+            }
+            return 1;
+        }
+        break;
+    default:
+        break;
+    }
+
+    return 0;
+}
+
+static void input_update(void *p){
+    layout_input_t *input=p;
+    if(input==NULL){
+        return;
+    }
+
+    layout_update(&input->l);
+    if(input_trim_to_limit(input)){
+        input_rebuild_text(input);
+    }
+    input_measure_text(input);
+    input_clamp_scroll(input);
+    input_position_text(input);
+    input_sync_ime_area(input);
+}
+
+static void input_draw(void *p){
+    layout_input_t *input=p;
+    if(input==NULL||input->text_draft==NULL||renderer==NULL){
+        return;
+    }
+
+    input_update(input);
+    draft_draw_text(input->text_draft);
+}
+
+layout_input_t *create_layout_input(void *parent,float w,float h,align_t align,
+    const char *text,TTF_Font *font,unsigned color,size_t max_bytes,
+    input_callback_func callback,void *data){
+    if(w<=0.0f||h<=0.0f||font==NULL){
+        return NULL;
+    }
+
+    layout_input_t *input=(layout_input_t *)create_layout(
+        sizeof(*input),
+        parent,
+        w,
+        h,
+        input_draw,
+        input_update,
+        input_clear,
+        input_mouse,
+        align
+    );
+    if(input==NULL){
+        return NULL;
+    }
+
+    size_t full_length=text!=NULL?strlen(text):0;
+    size_t length=input_limit_prefix(text,full_length,max_bytes);
+    input->text=malloc(length+1);
+    if(input->text==NULL){
+        delete_layout((layout_t *)input);
+        return NULL;
+    }
+
+    if(length>0){
+        memcpy(input->text,text,length);
+    }
+    input->text[length]='\0';
+    input->length=length;
+    input->capacity=length+1;
+    input->cursor=length;
+    input->max_bytes=max_bytes;
+    input->font=font;
+    input->text_color=color;
+    input->callback=callback;
+    input->data=data;
+    input->focused=0;
+    input->last_left=0;
+
+    align_t zero=make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f);
+    input->text_draft=draft_create_text(zero,font,input->text,0.0f,0.0f,color);
+    if(input->text_draft==NULL){
+        delete_layout((layout_t *)input);
+        return NULL;
+    }
+    input->text_draft->parent=(sublayout_t *)&input->l;
+    input->text_draft->can_enter=0;
+    input->text_draft->can_change=0;
+    input_rebuild_text(input);
+    return input;
+}
+
+/* ---- 统一事件处理 ---- */
+
+int sdlgui_handle_event(const SDL_Event *event){
+    if(event==NULL){
+        return 1;
+    }
+
+    /* 焦点输入框优先处理文本和编辑键 */
+    if(layout_input_event(event)){
+        return 1;
+    }
+
+    SDL_Window *w=get_window();
+
+    switch(event->type){
+    case SDL_EVENT_QUIT:
+        return 0;
+    case SDL_EVENT_KEY_DOWN:
+        if(event->key.key==SDLK_ESCAPE){
+            return 0;
+        }
+        break;
+    case SDL_EVENT_WINDOW_RESIZED:
+    case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+    case SDL_EVENT_WINDOW_DISPLAY_CHANGED:
+        update_root();
+        break;
+    case SDL_EVENT_SYSTEM_THEME_CHANGED:
+        theme_select_system();
+        break;
+    case SDL_EVENT_MOUSE_MOTION:
+        if(w!=NULL&&event->motion.windowID==SDL_GetWindowID(w)){
+            set_mouse_pos(event->motion.x,event->motion.y);
+        }
+        break;
+    case SDL_EVENT_MOUSE_BUTTON_DOWN:
+    case SDL_EVENT_MOUSE_BUTTON_UP:
+        if(w!=NULL&&event->button.windowID==SDL_GetWindowID(w)){
+            set_mouse_pos(event->button.x,event->button.y);
+            SDL_MouseButtonFlags buttons=SDL_GetMouseState(NULL,NULL);
+            set_mouse_button((buttons&SDL_BUTTON_LMASK)!=0,
+                (buttons&SDL_BUTTON_MMASK)!=0,
+                (buttons&SDL_BUTTON_RMASK)!=0,
+                (buttons&SDL_BUTTON_X1MASK)!=0,
+                (buttons&SDL_BUTTON_X2MASK)!=0);
+        }
+        break;
+    case SDL_EVENT_MOUSE_WHEEL:
+        if(w!=NULL&&event->wheel.windowID==SDL_GetWindowID(w)){
+            set_mouse_pos(event->wheel.mouse_x,event->wheel.mouse_y);
+            set_mouse_wheel(event->wheel.x,event->wheel.y);
+        }
+        break;
+    default:
+        break;
+    }
+
+    return 1;
+}
+
+void sdlgui_render_frame(void){
+    static int rendering=0;
+    if(renderer==NULL||rendering){
+        return;
+    }
+    rendering=1;
+
+    unsigned background=get_color(COLOR_MAIN);
+    SDL_SetRenderDrawColor(renderer,
+        (background>>24)&0xFF,(background>>16)&0xFF,
+        (background>>8)&0xFF,background&0xFF);
+    SDL_RenderClear(renderer);
+
+    update_root();
+    draw_root();
+
+    SDL_RenderPresent(renderer);
+    rendering=0;
+}
+
+static bool SDLCALL sdlgui_live_resize_watch(void *userdata,SDL_Event *event){
+    (void)userdata;
+    if(event->type!=SDL_EVENT_WINDOW_EXPOSED){
+        return true;
+    }
+
+    SDL_Window *w=get_window();
+    if(w!=NULL&&event->window.windowID==SDL_GetWindowID(w)){
+        sdlgui_render_frame();
+    }
+    return true;
+}
+
+void sdlgui_enable_live_resize(void){
+    SDL_AddEventWatch(sdlgui_live_resize_watch,NULL);
+}
+
+void sdlgui_disable_live_resize(void){
+    SDL_RemoveEventWatch(sdlgui_live_resize_watch,NULL);
 }

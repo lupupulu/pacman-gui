@@ -11,6 +11,9 @@ typedef struct SDL_Texture SDL_Texture;
 #ifndef SDL_video_h_
 typedef struct SDL_Window SDL_Window;
 #endif
+#ifndef SDL_events_h_
+typedef union SDL_Event SDL_Event;
+#endif
 
 /* 主题搜索路径的兜底值。运行时还会自动加入可执行文件/应用包里的 assets 目录、
  * 以及当前平台的用户/系统主题目录；设置 SDLGUI_THEME_PATH 环境变量会完全覆盖。 */
@@ -59,7 +62,15 @@ int get_mouse_x1(void);
 int get_mouse_x2(void);
 
 void update_root(void);   /* 更新根尺寸，计算各布局对齐 */
+/* 处理一个 SDL 事件；返回 0 表示应用应退出，1 表示继续。
+ * SDL_PollEvent 仍由调用方主循环负责。 */
+int sdlgui_handle_event(const SDL_Event *event);
 void draw_root(void);     /* 递归绘制布局树，裁剪到各布局范围 */
+/* 清屏、更新布局、绘制并 present 一帧；主循环和 live resize 共用。 */
+void sdlgui_render_frame(void);
+/* macOS 拖动窗口边缘时的 live resize 事件 watch。 */
+void sdlgui_enable_live_resize(void);
+void sdlgui_disable_live_resize(void);
 void resize_root(int w,int h);
 const layout_t *get_root(void);
 layout_t *get_root_layout(void);   /* 可修改的 root，用于挂接顶层布局 */
@@ -115,6 +126,8 @@ struct layout_t{
 
     unsigned enable:1; // 是否启用，禁用时，不更新此布局
     unsigned active:1; // 是否活跃，活跃时更新鼠标事件
+    unsigned mouse_inside:1;   // 上一帧鼠标是否在这个布局内
+    unsigned mouse_tracking:1; // 鼠标离开后仍按住左键，继续跟踪到松开
     unsigned son_resizable:1; // sons是否可以被realloc
     unsigned need_free:1; // 是否需要free释放
 
@@ -398,5 +411,51 @@ void list_slide(layout_list_t *l,float off);
 /* 读取/设置列表的绝对滚动偏移，供滑块控件同步。 */
 float list_get_slide(const layout_list_t *l);
 void list_set_slide(layout_list_t *l,float offset);
+
+
+/* 输入框布局处理鼠标形状、焦点、键盘输入和文字 draft；
+ * 背景与光标由外部绘制，文字通过内部 draft 绘制。
+ * 外部可以通过 layout_input_text()/layout_input_cursor()/layout_input_is_focused()
+ * 读取状态。 */
+
+typedef void (*input_callback_func)(const char *text,void *data);
+
+typedef struct {
+    layout_t l;
+
+    char *text;       // 以 '\0' 结尾的 UTF-8 文本，内部持有
+    size_t length;    // 字节长度
+    size_t capacity;  // 缓冲区容量
+    size_t cursor;    // 光标字节下标，总在 UTF-8 字符边界
+    size_t max_bytes; // 允许的最大字节数，0=不限制
+
+    TTF_Font *font;
+    unsigned text_color;
+    draft_text_t *text_draft; // 输入文字 draft
+    float text_width;         // 当前文字的逻辑宽度
+    float text_scroll;        // 文字横向滚动偏移
+
+    input_callback_func callback;
+    void *data;
+
+    unsigned focused:1;
+    unsigned last_left:1;
+}layout_input_t;
+
+/* 创建输入框布局；text 可为 NULL，font 必须非 NULL；
+ * max_bytes=0 表示不限制文本字节数。 */
+layout_input_t *create_layout_input(void *parent,float w,float h,align_t align,
+    const char *text,TTF_Font *font,unsigned color,size_t max_bytes,
+    input_callback_func callback,void *data);
+
+/* 把 SDL 输入事件交给当前焦点输入框；处理了返回 1，未处理返回 0。
+ * 需要主循环里对每个 SDL_Event 调用一次。 */
+int layout_input_event(const SDL_Event *event);
+
+void layout_input_focus(layout_input_t *input);
+void layout_input_blur(void);
+const char *layout_input_text(const layout_input_t *input);
+size_t layout_input_cursor(const layout_input_t *input);
+int layout_input_is_focused(const layout_input_t *input);
 
 #endif

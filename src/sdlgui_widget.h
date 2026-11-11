@@ -101,31 +101,36 @@ void set_selector_item_width(widget_selector_t *selector,float width);
 
 typedef void (*widget_size_func)(float *w,float *h);
 typedef struct {
-    layout_list_t l;
+    layout_t l;
     widget_size_func get_size;
 
     widget_selector_t *selector;
-    layout_t *content;
+
+    /* selector 原来的 callback/data；tabs 会覆盖成内部转发函数 */
+    selector_callback_func selector_callback;
+    void *selector_data;
+
     layout_t **pages;
     size_t page_count;
     size_t now_page;
-    selector_callback_func callback;
-    void *data;
+
+    unsigned selector_attached:1;
 }widget_tabs_t;
 
 /* get_size 在 update 时返回 tabs 的总宽高；NULL 或返回 0 时沿用布局尺寸。
  * selector 必须由调用方创建；只有 selector->l.parent == NULL 时才把它挂到 tabs 下，
  * 否则保持它原来的父布局和位置。tabs 的内容区从 selector 下边缘开始。
+ * tabs 会保存 selector 原来的 callback/data，并覆盖为内部转发函数：
+ * 先切换页面，再调用原 callback。删除 tabs 时，外部 selector 的 callback 会恢复。
  * widget_set_tabs 把页面挂到 tabs 内，只有当前页 enable/active=1；
  * 页面布局由 tabs 接管，删除 tabs 时会一并删除。 */
-widget_tabs_t *widget_create_tabs(void *parent,align_t align,widget_size_func get_size,
-    widget_selector_t *selector,selector_callback_func callback,void *data);
+widget_tabs_t *widget_create_tabs(void *parent,align_t align,widget_size_func get_size,widget_selector_t *selector);
 
 /* l 是 layout_t* 数组，n 是数组长度；传 NULL/0 可清空页面。 */
 void widget_set_tabs(widget_tabs_t *tabs,void *l,size_t n);
 /* 单独设置/替换第 index 页；l 为 NULL 时移除该页。 */
 void widget_set_tab(widget_tabs_t *tabs,void *l,size_t index);
-/* 程序化切换到第 index 页；有 selector 时同步其选中状态，并调用 tabs callback。 */
+/* 程序化切换到第 index 页；有 selector 时同步其选中状态。 */
 void widget_tabs_select(widget_tabs_t *tabs,size_t index);
 
 

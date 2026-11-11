@@ -40,6 +40,11 @@ make app      # macOS：生成 build/pacman-gui.app
 make run-app  # macOS：生成并用 Finder 打开 .app
 make font     # 重新生成嵌入字体的 build/pacman_pixel_font.c
 make clean    # 清理
+
+# 优化级别 / 链接时优化；切换时 Makefile 会自动重建对象文件
+make OPT=-O2 LTO=1
+make OPT=-Os LTO=1
+make OPT=-O3 LTO=1
 ```
 
 `make` 在 macOS 上没有装 pkg-config 也能工作：Makefile 会退回
@@ -133,8 +138,10 @@ build/         构建产物（已被 .gitignore 忽略）
 - SDL3 用返回值判断成败（`bool` + `SDL_GetError()`），没有 SDL2 那种 `int` 返回码。
 - `SDL_Window *` / `SDL_Renderer *` 在 SDL3 里已经是不透明指针，创建时传 `&window`。
 - `SDL_SetRenderVSync(renderer, 1)` 让主循环跟着显示器刷新走，否则会空转占满一个核。
-- 主循环固定三段：`SDL_PollEvent` 收事件 → 更新状态 → `SDL_RenderClear` /
-  绘制 / `SDL_RenderPresent`。要按时间推进动画时，用
+- 主循环固定三段：`SDL_PollEvent` 收事件 → `sdlgui_handle_event()` 处理事件 →
+  `SDL_RenderClear` / 绘制 / `SDL_RenderPresent`。`sdlgui_handle_event()` 封装了
+  退出、Escape、窗口尺寸、系统主题、鼠标状态和输入框事件；返回 0 时退出主循环。
+  `SDL_PollEvent` 本身仍留在 `main.c`。要按时间推进动画时，用
   `SDL_GetPerformanceCounter()` 求 `dt`（秒）并夹一个上限。
 - 窗口创建时带 `SDL_WINDOW_HIGH_PIXEL_DENSITY`：macOS 的 Retina 显示器上，
   窗口尺寸按“点”算，drawable 是它的 2 倍像素。布局、鼠标坐标统一用窗口逻辑尺寸，
@@ -454,7 +461,7 @@ static void tabs_size(float *w,float *h){
 
 widget_selector_t *selector = widget_create_selector_title(
     get_root_layout(), selector_align, 200.0f,
-    NULL, NULL,
+    on_tab, NULL,                       // 用户 callback 留在 selector 上
     "\\package 软件包",
     "\\installed 已安装",
     "\\settings 设置",
@@ -465,9 +472,7 @@ widget_tabs_t *tabs = widget_create_tabs(
     get_root_layout(),
     make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f),
     tabs_size,
-    selector,
-    on_tab,
-    NULL
+    selector
 );
 
 layout_t *pages[] = { package_page, installed_page, settings_page };
@@ -476,12 +481,121 @@ widget_set_tabs(tabs, pages, 3);
 
 - selector 的 parent 为 `NULL` 时，tabs 才把它挂到自己下面并管理宽度
 - selector 已经挂在其他父布局下时，tabs 保持它的位置和宽度不变，只把内容区放到它的下边缘
-- tabs 通过检测 selector 的 `now_button` 变化切换页面，因此不会覆盖 selector 自己的 callback
+- tabs 会保存 selector 原来的 callback/data，覆盖为内部转发函数：
+  先切换页面，再调用原 callback
+- 删除 tabs 时，外部 selector 的 callback/data 会恢复
+- tabs 不再接收自己的 callback 参数
 - `get_size` 每次 update 都会被调用，返回 tabs 的总宽高；返回 0 的字段沿用布局尺寸
 - 只有当前页 `enable/active=1`，其余页不更新、不绘制、不接收鼠标
 - 页面布局由 tabs 接管，删除 tabs 时一并释放
 - `widget_tabs_select(tabs, index)` 可程序化切换；有 selector 时同步其选中状态
 - `widget_set_tab(tabs, page, index)` 可单独设置/替换某一页
+
+## 输入框布局
+
+`create_layout_input()` 负责输入框的交互和文字显示：
+
+- 鼠标进入布局时切换为 I-beam 文本光标
+- 鼠标离开时恢复默认光标
+- 左键点击布局后获取焦点，开始接收键盘输入
+- 点击输入框外部时自动失去焦点
+- 维护 UTF-8 文本、光标位置、最大字节数和焦点状态
+- 内部用文字 draft 绘制输入内容，缓冲区变化时立即重建纹理
+- 聚焦和光标/滚动变化时调用 `SDL_SetTextInputArea()`，把 IME 候选窗锚定到
+  当前光标的小矩形，而不是窗口角落
+- 背景和文字光标仍由调用方绘制
+
+```c
+static void on_submit(const char *text,void *data){
+    printf("submit: %s\n",text);
+}
+
+TTF_Font *font = obtain_font(get_font(TEXT_CONTEXT),
+                             get_text_size(TEXT_CONTEXT));
+
+layout_input_t *input = create_layout_input(
+    get_root_layout(),
+    320.0f,                     // 宽
+    44.0f,                      // 高
+    make_align(3,0,0,0,0.0f,120.0f,0,0),
+    "",                         // 初始文字
+    font,
+    get_text_color(TEXT_CONTEXT),
+    128,                        // 最大字节数，0=不限制
+    on_submit,                  // 回车回调，可为 NULL
+    NULL
+);
+```
+
+主循环里把事件交给统一处理函数：
+
+```c
+while(SDL_PollEvent(&ev)){
+    if(!sdlgui_handle_event(&ev)){
+        break;                  // QUIT / 无输入焦点时的 Esc
+    }
+}
+```
+
+`sdlgui_handle_event()` 会优先把文本和编辑键交给当前焦点输入框，然后处理
+窗口、主题、鼠标等系统事件。`SDL_PollEvent` 保留在调用方主循环中。
+
+支持的编辑操作：
+
+- 普通文字输入
+- `Backspace` / `Delete`
+- `Left` / `Right`
+- `Home` / `End`
+- `Enter` 调用回调
+- `Esc` 失去焦点
+- `Ctrl+V` / `Cmd+V` 粘贴
+
+滚动：
+
+- 鼠标在输入框内、且文字宽度超过输入框宽度时，消费滚轮的左右横移
+- 横移会调整 `input->text_scroll`，文字渲染起点随之左右滑动
+- 文字较短时不消费横向滚轮
+- 文字变短或输入框变宽后，偏移会自动夹回有效范围
+
+调用方读取状态绘制背景/光标：
+
+```c
+const char *text = layout_input_text(input);
+size_t cursor = layout_input_cursor(input);
+int focused = layout_input_is_focused(input);
+
+// 文字 draft 的横向起点已经按 text_scroll 调整
+float scroll = input->text_scroll;
+float text_width = input->text_width;
+```
+
+`cursor` 是 UTF-8 字节下标，并且始终落在字符边界上。`max_bytes` 限制的是
+文本字节数（不含结尾 `\0`），截断时不会留下半个 UTF-8 字符。
+背景、光标和光标闪烁由外部根据这些状态绘制。
+
+输入框使用的字体必须包含要显示的文字字形。例如主题默认的 `monospace`
+在 macOS 上通常是 Menlo，不包含中文字形；需要中文时请传入
+`PingFang SC` 等包含 CJK 字形的字体。
+
+## 输入框测试程序
+
+仓库里有一个可交互的输入框测试程序：
+
+- 源文件：`tests/input_test.c`
+- 构建并运行：`make test-input`
+- 测试布局只绘制文字，背景、边框和文字光标由测试程序绘制
+- 初始文本包含中文，用于验证中文渲染
+- 自动优先使用 `PingFang SC` 等 CJK 字体，找不到时回退主题字体
+- 初始文本较长，用于验证横向滚轮滑动
+- 最大字节数为 96
+
+运行后可以：
+
+- 点击输入框聚焦并输入，可使用系统输入法
+- 输入法候选窗会锚定在文字光标附近
+- 文字溢出时用横向滚轮滑动
+- `Enter` 在日志中打印提交内容
+- `Esc` 先失焦，再按一次退出
 
 ## 主题与资源搜索路径
 
