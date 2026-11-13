@@ -13,6 +13,7 @@
 #   switch_animation_time  开关旋钮滑动动画时长，单位 ms
 #   switch_width       开关总长（宽度），单位 px
 #   switch_icon_height   开关旋钮图标边长，单位 px；0 表示跟随开关高度
+#   selector_item_width  selector 每项宽度，单位 px
 #   slider_animation_time  滑块淡出动画时长，单位 ms
 #   slider_width       滑块宽度，单位 px
 #   slider_least_height 滑块最小高度，单位 px
@@ -37,6 +38,7 @@ button_animation_time = 100
 switch_animation_time = 120
 switch_width = 32.0
 switch_icon_height = 0.0
+selector_item_width = 72.0
 slider_animation_time = 200
 slider_width = 8.0
 slider_least_height = 24.0

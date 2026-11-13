@@ -79,6 +79,7 @@ typedef struct {
     unsigned long switch_animation_time;
     float switch_width;      /* 开关总长 */
     float switch_icon_height;  /* 开关旋钮图标边长；0 表示跟随开关高度 */
+    float selector_item_width; /* selector 每项宽度 */
 
     unsigned long slider_animation_time;
     float slider_width;

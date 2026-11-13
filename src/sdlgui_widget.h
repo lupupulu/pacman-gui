@@ -20,6 +20,9 @@ widget_button_t *widget_create_raw_button(void *parent,float w,float h,float r,a
 /* 读取主题高度/圆角/字体/配色和动画时长，然后调用 widget_create_raw_button()。 */
 widget_button_t *widget_create_button(void *parent,float width,align_t align,const char *text,
     button_callback_func callback,void *data);
+/* 与 widget_create_button() 相同，但字体和文字颜色使用 TEXT_SUBTITLE。 */
+widget_button_t *widget_create_button_subtitle(void *parent,float width,align_t align,const char *text,
+    button_callback_func callback,void *data);
 
 /* 开关状态回调：on 是切换后的状态，0=关，1=开 */
 typedef void (*switch_callback_func)(int on,void *data);
@@ -167,6 +170,34 @@ void widget_slider_set(widget_slider_t *slider,float offset);
 float widget_slider_get(const widget_slider_t *slider);
 
 
+
+typedef struct {
+    layout_t l;
+    enum{
+        WIDGET_ITEM_SWITCH,
+        WIDGET_ITEM_WITH_BUTTON,
+        WIDGET_ITEM_SELECTOR,
+        WIDGET_ITEM_BAR, // 暂未实现
+        WIDGET_ITEM_BUTTON // 暂未实现
+    }type;
+    draft_texture_t *text;   /* 左侧文字（可含 \icon），由 item 释放 */
+    void *widget;            /* 右侧控件，作为 item 的子布局 */
+}widget_item_t;
+
+/* 左侧文字 + 右侧控件的通用行布局。
+ * text 的所有权会在成功后交给 item；widget 会被挂到 item 下。
+ * w<=0 时由 align 决定宽度，h<=0 时使用主题 item_height。 */
+widget_item_t *create_raw_item(void *parent,align_t align,float w,float h,
+    draft_texture_t *text,int type,void *widget);
+
+/* 右侧开关/按钮；按钮宽度取主题 switch_width。 */
+widget_item_t *create_item_switch(void *parent,align_t align,const char *text,
+    switch_callback_func callback,void *data);
+widget_item_t *create_item_with_button(void *parent,align_t align,const char *text,
+    const char *button,button_callback_func callback,void *data);
+/* 右侧 selector；每一项宽度取主题 selector_item_width。 */
+widget_item_t *create_item_selector(void *parent,align_t align,const char *text,
+    selector_callback_func callback,void *data,...);
 
 
 #endif

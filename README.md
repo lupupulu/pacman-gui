@@ -105,6 +105,7 @@ pkg-config --cflags sdl3 sdl3-ttf
 ```
 Makefile       构建规则（macOS 用 Homebrew 前缀 + CoreText，Linux 用 pkg-config + fontconfig）
 src/main.c     程序入口与主循环
+src/init.c/.h  主界面布局、selector、tabs 和页面创建
 src/sdlgui.c   窗口、鼠标、布局、绘制与高 DPI 处理
 src/sdlgui.h
 src/sdlgui_theme.c   主题、配色、字体缓存与 TOML 配置
@@ -296,6 +297,49 @@ widget_switch_t *sw = widget_create_raw_switch(
 `widget_create_switch()` 只负责从主题取尺寸、颜色、动画时长和旋钮纹理，
 然后调用 `widget_create_raw_switch()`。
 
+## 设置行控件
+
+`widget_item_t` 是设置页常见的“左侧说明 + 右侧控件”行：
+
+```c
+widget_item_t *s = create_item_switch(
+    get_root_layout(), row_align,
+    "\\settings Enable feature",
+    on_switch, NULL
+);
+
+widget_item_t *b = create_item_with_button(
+    get_root_layout(), row_align,
+    "\\package Open settings",
+    "\\settings Open",
+    on_button, NULL
+);
+
+widget_item_t *sel = create_item_selector(
+    get_root_layout(), row_align,
+    "Theme",
+    on_theme,
+    NULL,
+    "Light", "Dark", NULL
+);
+```
+
+- 左侧文字使用 `draft_create_icon_with_text()`，因此支持 `\icon` 标记
+- 右侧控件自动靠右、垂直居中
+- 按钮宽度直接取主题根层 `switch_width`
+- selector 每一项宽度取主题根层 `selector_item_width`
+- 行高度取 `item_height`
+- `create_raw_item()` 接受现成的文字 draft 和右侧控件，适合自定义行
+
+配置示例：
+
+```toml
+switch_width = 32.0
+selector_item_width = 72.0
+```
+
+`create_raw_item()` 成功后接管文字 draft；右侧控件会被挂到行布局下。
+
 ## 选择器控件
 
 选择器是类似苹果顶栏/底栏的分段切换按钮：一条轨道上排列若干项，选中项用
@@ -433,7 +477,7 @@ layout_label_t *label = create_layout_label(
 - maintainer 和 submitter 都为空时，整行人员信息不创建、不显示
 - 按钮回调暂未接逻辑，只用于绘制测试
 
-`main.c` 里用 tabs 代替原来的顶部 selector：
+`init.c` 里创建 tabs 和页面布局，`main.c` 只负责初始化和事件循环：
 - `package` 页：垂直 package 列表，可滚动
 - `installed` 页：空矩形
 - `settings` 页：空矩形

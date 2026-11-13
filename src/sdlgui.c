@@ -847,9 +847,11 @@ void layout_update(void *p){
 
 
 
-layout_rect_t *create_layout_rect(void *parent,float w,float h,align_t align){
+layout_rect_t *create_layout_rect(void *parent,float w,float h,align_t align,unsigned color){
     layout_t *p=parent?parent:&root;
-    return create_layout(sizeof(layout_rect_t),p,w,h,rect_draw,layout_update,NULL,NULL,align);
+    layout_rect_t *r=create_layout(sizeof(layout_rect_t),p,w,h,rect_draw,layout_update,NULL,NULL,align);
+    r->color=color;
+    return r;
 }
 
 

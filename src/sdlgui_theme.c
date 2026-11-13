@@ -66,6 +66,7 @@ static theme_t theme={
     .button_height=32.0f,
     .switch_width=64.0f,
     .switch_icon_height=0.0f,
+    .selector_item_width=72.0f,
     .rect_round_corner=10.0f,
     .slider_animation_time=200,
     .slider_width=8.0f,
@@ -257,6 +258,7 @@ static void theme_reset_builtin(void){
     theme.button_height=32.0f;
     theme.switch_width=64.0f;
     theme.switch_icon_height=0.0f;
+    theme.selector_item_width=72.0f;
     theme.rect_round_corner=10.0f;
     theme.slider_animation_time=200;
     theme.slider_width=8.0f;
@@ -495,6 +497,7 @@ void theme_set(const char *path,const char *file){
     tmp.button_height=32.0f;
     tmp.switch_width=64.0f;
     tmp.switch_icon_height=0.0f;
+    tmp.selector_item_width=72.0f;
     tmp.rect_round_corner=10.0f;
     tmp.slider_animation_time=200;
     tmp.slider_width=8.0f;
@@ -695,6 +698,15 @@ void theme_set(const char *path,const char *file){
             goto fail;
         }
         tmp.switch_icon_height=(float)v;
+    }
+    tp=toml_lookup(&t,"",0,"selector_item_width");
+    if(tp!=NULL){
+        double v=0.0;
+        if(!theme_read_number(tp,&v)||!isfinite(v)||v<=0.0){
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("theme_set: selector_item_width must be positive"));
+            goto fail;
+        }
+        tmp.selector_item_width=(float)v;
     }
     tp=toml_lookup(&t,"",0,"rect_round_corner");
     if(tp!=NULL){

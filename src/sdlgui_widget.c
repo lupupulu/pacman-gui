@@ -265,6 +265,39 @@ widget_button_t *widget_create_button(void *parent,float width,align_t align,con
     );
 }
 
+widget_button_t *widget_create_button_subtitle(void *parent,float width,align_t align,const char *text,
+    button_callback_func callback,void *data){
+    float height=get_theme()->button_height;
+    if(get_theme()->item_height>0.0f&&height>get_theme()->item_height){
+        height=get_theme()->item_height;
+    }
+    if(width<=0.0f||height<=0.0f){
+        return NULL;
+    }
+
+    TTF_Font *font=obtain_font(get_font(TEXT_SUBTITLE),get_text_size(TEXT_SUBTITLE));
+    if(font==NULL){
+        return NULL;
+    }
+
+    return widget_create_raw_button(
+        parent,
+        width,
+        height,
+        get_theme()->rect_round_corner,
+        align,
+        font,
+        text,
+        get_color(COLOR_BUTTON),
+        get_color(COLOR_BUTTON_HIGHLIGHT),
+        get_color(COLOR_BUTTON_CONFIRM),
+        get_text_color(TEXT_SUBTITLE),
+        get_theme()->button_animation_time,
+        callback,
+        data
+    );
+}
+
 typedef struct {
     draft_rrect_t *track;
     draft_rrect_t *on_block;
@@ -1695,4 +1728,316 @@ void slider_mouse(void *p){
         slider->dragging=0;
     }
     slider->last_left=pressed?1u:0u;
+}
+/* ---- 设置行：左侧文字 + 右侧控件 ---- */
+
+#define ITEM_SIDE_MARGIN 12.0f
+#define ITEM_CONTROL_GAP 12.0f
+
+static float item_theme_height(void){
+    float height=get_theme()->item_height;
+    if(height<=0.0f){
+        height=get_theme()->button_height;
+    }
+    if(height<=0.0f){
+        height=32.0f;
+    }
+    return height;
+}
+
+static float item_parent_width(void *parent){
+    layout_t *p=parent!=NULL?(layout_t *)parent:get_root_layout();
+    return p!=NULL?p->width:0.0f;
+}
+
+static float item_text_limit(widget_item_t *item){
+    if(item==NULL){
+        return 1.0f;
+    }
+
+    float control_width=0.0f;
+    if(item->widget!=NULL){
+        layout_t *control=item->widget;
+        layout_update(control);
+        control_width=control->width;
+    }
+
+    float width=item->l.width-ITEM_SIDE_MARGIN*2.0f-ITEM_CONTROL_GAP-control_width;
+    return width>1.0f?width:1.0f;
+}
+
+static void item_draw(void *p){
+    widget_item_t *item=p;
+    if(item!=NULL&&item->text!=NULL){
+        draft_draw_texture(item->text);
+    }
+}
+
+static void item_update(void *p){
+    widget_item_t *item=p;
+    if(item==NULL){
+        return;
+    }
+
+    layout_update(&item->l);
+
+    if(item->text!=NULL){
+        item->text->x=item->l.x+ITEM_SIDE_MARGIN;
+        item->text->y=item->l.y+(item->l.height-item->text->height)/2.0f;
+    }
+
+    if(item->widget!=NULL){
+        layout_t *control=item->widget;
+        layout_update(control);
+        control->x=item->l.x+item->l.width-ITEM_SIDE_MARGIN-control->width;
+        control->y=item->l.y+(item->l.height-control->height)/2.0f;
+    }
+}
+
+static void item_clear(void *p){
+    widget_item_t *item=p;
+    if(item==NULL){
+        return;
+    }
+
+    if(item->text!=NULL){
+        draft_texture_clear(item->text);
+        free(item->text);
+        item->text=NULL;
+    }
+    item->widget=NULL;
+}
+
+widget_item_t *create_raw_item(void *parent,align_t align,float w,float h,
+    draft_texture_t *text,int type,void *widget){
+    if(h<=0.0f){
+        h=item_theme_height();
+    }
+    if(w<0.0f){
+        w=0.0f;
+    }
+
+    widget_item_t *item=create_layout(
+        sizeof(*item),
+        parent,
+        w,
+        h,
+        item_draw,
+        item_update,
+        item_clear,
+        NULL,
+        align
+    );
+    if(item==NULL){
+        return NULL;
+    }
+
+    item->type=type;
+    item->text=NULL;
+    item->widget=NULL;
+
+    if(widget!=NULL){
+        if(!layout_attach((layout_t *)widget,(layout_t *)item)){
+            delete_layout((layout_t *)item);
+            return NULL;
+        }
+        ((layout_t *)widget)->align=make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f);
+        item->widget=widget;
+    }
+
+    if(text!=NULL){
+        text->parent=(sublayout_t *)&item->l;
+        text->align=make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f);
+        item->text=text;
+    }
+
+    item_update(item);
+    return item;
+}
+
+static int item_set_text(widget_item_t *item,const char *text){
+    if(item==NULL){
+        return 0;
+    }
+    if(text==NULL||text[0]=='\0'){
+        return 1;
+    }
+
+    TTF_Font *font=obtain_font(get_font(TEXT_CONTEXT),get_text_size(TEXT_CONTEXT));
+    if(font==NULL){
+        return 0;
+    }
+
+    align_t zero=make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f);
+    draft_texture_t *draft=draft_create_icon_with_text(
+        zero,
+        font,
+        (char *)text,
+        item_text_limit(item),
+        0.0f,
+        get_text_color(TEXT_CONTEXT)
+    );
+    if(draft==NULL){
+        return 0;
+    }
+
+    draft->parent=(sublayout_t *)&item->l;
+    draft->align=zero;
+    item->text=draft;
+    return 1;
+}
+
+static widget_item_t *item_base(void *parent,align_t align,int type){
+    widget_item_t *item=create_raw_item(
+        parent,align,0.0f,item_theme_height(),NULL,type,NULL);
+    if(item==NULL){
+        return NULL;
+    }
+
+    layout_update(&item->l);
+    if(item->l.width<=0.0f){
+        item->l.width=item_parent_width(parent);
+    }
+    return item;
+}
+
+widget_item_t *create_item_switch(void *parent,align_t align,const char *text,
+    switch_callback_func callback,void *data){
+    widget_item_t *item=item_base(parent,align,WIDGET_ITEM_SWITCH);
+    if(item==NULL){
+        return NULL;
+    }
+
+    align_t zero=make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f);
+    widget_switch_t *sw=widget_create_switch(item,zero,callback,data);
+    if(sw==NULL){
+        delete_layout((layout_t *)item);
+        return NULL;
+    }
+
+    sw->l.align=zero;
+    item->widget=sw;
+
+    if(!item_set_text(item,text)){
+        delete_layout((layout_t *)item);
+        return NULL;
+    }
+
+    item_update(item);
+    return item;
+}
+
+widget_item_t *create_item_with_button(void *parent,align_t align,const char *text,
+    const char *button,button_callback_func callback,void *data){
+    float width=get_theme()->switch_width;
+    if(width<=0.0f){
+        return NULL;
+    }
+
+    widget_item_t *item=item_base(parent,align,WIDGET_ITEM_WITH_BUTTON);
+    if(item==NULL){
+        return NULL;
+    }
+
+    align_t zero=make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f);
+    widget_button_t *btn=widget_create_button(item,width,zero,button,callback,data);
+    if(btn==NULL){
+        delete_layout((layout_t *)item);
+        return NULL;
+    }
+
+    btn->l.align=zero;
+    item->widget=btn;
+
+    if(!item_set_text(item,text)){
+        delete_layout((layout_t *)item);
+        return NULL;
+    }
+
+    item_update(item);
+    return item;
+}
+
+widget_item_t *create_item_selector(void *parent,align_t align,const char *text,
+    selector_callback_func callback,void *data,...){
+    float item_width=get_theme()->selector_item_width;
+    if(item_width<=0.0f){
+        return NULL;
+    }
+
+    darray_t(const char *)items;
+    da_init(&items);
+
+    va_list arg;
+    va_start(arg,data);
+    const char *value=NULL;
+    while((value=va_arg(arg,const char *))!=NULL){
+        if(da_add(sizeof(value),&items,&value)!=0){
+            da_clear(&items);
+            va_end(arg);
+            return NULL;
+        }
+    }
+    va_end(arg);
+
+    if(items.size==0){
+        da_clear(&items);
+        return NULL;
+    }
+
+    widget_item_t *item=item_base(parent,align,WIDGET_ITEM_SELECTOR);
+    if(item==NULL){
+        da_clear(&items);
+        return NULL;
+    }
+
+    TTF_Font *font=obtain_font(get_font(TEXT_CONTEXT),get_text_size(TEXT_CONTEXT));
+    if(font==NULL){
+        da_clear(&items);
+        delete_layout((layout_t *)item);
+        return NULL;
+    }
+
+    float height=get_theme()->button_height;
+    if(get_theme()->item_height>0.0f&&height>get_theme()->item_height){
+        height=get_theme()->item_height;
+    }
+    int line_height=TTF_GetFontHeight(font);
+    if(line_height>0&&height<(float)line_height){
+        height=(float)line_height;
+    }
+
+    align_t zero=make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f);
+    widget_selector_t *selector=widget_create_raw_selector(
+        item,
+        zero,
+        item_width,
+        height,
+        height/2.0f,
+        font,
+        items.arr,
+        items.size,
+        get_color(COLOR_SWITCH_OFF),
+        get_color(COLOR_SWITCH_ON),
+        get_text_color(TEXT_CONTEXT),
+        get_theme()->switch_animation_time,
+        callback,
+        data
+    );
+    da_clear(&items);
+    if(selector==NULL){
+        delete_layout((layout_t *)item);
+        return NULL;
+    }
+
+    selector->l.l.align=zero;
+    item->widget=selector;
+
+    if(!item_set_text(item,text)){
+        delete_layout((layout_t *)item);
+        return NULL;
+    }
+
+    item_update(item);
+    return item;
 }

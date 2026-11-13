@@ -71,7 +71,7 @@ static void package_update(void *p){
     }
 
     package_t *package=card->package;
-    int installed=package!=NULL&&package->installed;
+    int installed=package!=NULL&&package->stat!=PKG_STAT_NULL;
     float info_width=width-PACKAGE_MARGIN*2.0f-PACKAGE_PRIMARY_WIDTH-PACKAGE_MARGIN;
     if(info_width<40.0f){
         info_width=40.0f;
@@ -151,7 +151,7 @@ layout_rect_t *create_layout_package(package_t *package){
     }
 
     card->package=package;
-    card->rect.color=get_color(COLOR_SECONDARY);
+    card->rect.color=get_color(COLOR_MAIN);
 
     TTF_Font *subtitle=obtain_font(get_font(TEXT_SUBTITLE),get_text_size(TEXT_SUBTITLE));
     TTF_Font *context=obtain_font(get_font(TEXT_CONTEXT),get_text_size(TEXT_CONTEXT));
@@ -218,9 +218,9 @@ layout_rect_t *create_layout_package(package_t *package){
         return NULL;
     }
 
-    const char *primary_text=package->installed
-        ?"\\update update"
-        :"\\install install";
+    const char *primary_text=package->stat==PKG_STAT_NULL
+        ?"\\install install"
+        :"\\update update";
     card->primary=widget_create_button(
         card,
         PACKAGE_PRIMARY_WIDTH,
@@ -233,7 +233,7 @@ layout_rect_t *create_layout_package(package_t *package){
         card->primary->l.align=make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f);
     }
 
-    if(package->installed){
+    if(package->stat!=PKG_STAT_NULL){
         card->remove=widget_create_button(
             card,
             PACKAGE_DELETE_WIDTH,

@@ -159,7 +159,7 @@ typedef struct {
     unsigned color;
 }layout_rect_t; // 测试用矩形布局
 void rect_draw(void *l);
-layout_rect_t *create_layout_rect(void *parent,float w,float h,align_t align);
+layout_rect_t *create_layout_rect(void *parent,float w,float h,align_t align,unsigned color);
 
 
 

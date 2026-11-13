@@ -142,7 +142,8 @@ int main(void)
     );
 
     layout_rect_t *field = create_layout_rect(
-        get_root_layout(), FIELD_W, FIELD_H, zero);
+        get_root_layout(), FIELD_W, FIELD_H, zero,
+        get_color(COLOR_SECONDARY));
     layout_input_t *input = create_layout_input(
         get_root_layout(),
         FIELD_W, FIELD_H, zero,
