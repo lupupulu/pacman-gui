@@ -358,6 +358,7 @@ typedef struct {
     layout_t l;
     unsigned sublayout_resizable:1;
     unsigned left_last_state:1; // 鼠标左键上次状态
+    unsigned hover_last:1;      // 上一帧鼠标是否在判定框内
     unsigned pressed_inside:1;  // 本次按下是否落在判定框内
     unsigned need_bounce:2;     // 是否等到鼠标回弹再触发 0:否 1:无论回弹时在哪，回弹即触发 2:只有在子布局内回弹才触发
 
@@ -400,6 +401,9 @@ typedef struct {
  * list_clear() 负责释放它们。direction=0 竖向排列，非 0 横向排列。 */
 layout_list_t *create_layout_list(void *parent,float w,float h,align_t align,int direction,...);
 
+/* 向 list 追加一个已经创建的布局；成功后布局归 list 所有。 */
+int list_add(layout_list_t *l,layout_t *item);
+
 void list_draw(void *l);
 void list_update(void *l);
 void list_clear(void *l);
@@ -410,6 +414,8 @@ void list_mouse(void *l);
 void list_slide(layout_list_t *l,float off);
 /* 读取/设置列表的绝对滚动偏移，供滑块控件同步。 */
 float list_get_slide(const layout_list_t *l);
+/* 内容在滚动方向上的总长度；没有子布局时返回 0。 */
+float list_get_content_height(const layout_list_t *l);
 void list_set_slide(layout_list_t *l,float offset);
 
 

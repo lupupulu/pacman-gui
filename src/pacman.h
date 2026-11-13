@@ -63,4 +63,14 @@ typedef struct {
 
 void pacman_register(pacman_t *m);
 
+/* 后端列表：pacman.c 统一管理，init/main 不直接引用具体后端。 */
+int pacman_init_all(void);
+void pacman_quit_all(void);
+size_t pacman_backend_count(void);
+pacman_t *pacman_backend_at(size_t index);
+
+/* installed 卡片使用的统一包视图：按顺序跨所有后端遍历。 */
+size_t pacman_package_count(void);
+package_t *pacman_package_at(size_t index);
+
 #endif

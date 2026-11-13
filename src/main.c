@@ -29,6 +29,7 @@ int main(int argc,char *argv[]){
 
     if(!init_ui()){
         sdlgui_quit();
+        init_ui_quit();
         return 1;
     }
 
@@ -49,5 +50,6 @@ int main(int argc,char *argv[]){
     sdlgui_disable_live_resize();
 
     sdlgui_quit();
+    init_ui_quit();
     return 0;
 }

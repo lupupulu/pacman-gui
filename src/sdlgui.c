@@ -2389,6 +2389,7 @@ layout_button_t *create_layout_button(void *parent,float w,float h,align_t align
 
     l->need_bounce=1;
     l->left_last_state=0;
+    l->hover_last=0;
     l->pressed_inside=0;
     l->status=BUTTON_STATUS_OUT;
     l->callback=callback;
@@ -2464,11 +2465,14 @@ void button_mouse(void *p){
 
     int pressed=get_mouse_left()!=0;
     int was_pressed=l->left_last_state!=0;
+    int was_hover=l->hover_last!=0;
     int trigger=FALSE;
 
     if(pressed&&!was_pressed){
-        l->pressed_inside=hover?1u:0u;
-        if(l->need_bounce==0&&hover){
+        /* 只有按下那一刻鼠标已经在按钮内，才算按下按钮。
+         * 按住左键从按钮外拖进来时 was_hover=0，不能产生 click/confirm。 */
+        l->pressed_inside=(hover&&was_hover)?1u:0u;
+        if(l->need_bounce==0&&hover&&was_hover){
             trigger=TRUE;
         }
     }else if(!pressed&&was_pressed){
@@ -2481,6 +2485,7 @@ void button_mouse(void *p){
     }
 
     l->left_last_state=pressed?1u:0u;
+    l->hover_last=hover?1u:0u;
 
     if(trigger){
         button_update_status(l,BUTTON_STATUS_TRIGGER);
@@ -2747,6 +2752,27 @@ static void list_set_next_align(layout_list_t *l,layout_t *item){
     }
 }
 
+int list_add(layout_list_t *l,layout_t *item){
+    if(l==NULL||item==NULL){
+        return 0;
+    }
+
+    if(da_add(sizeof(item),&l->sons,&item)!=0){
+        return 0;
+    }
+
+    layout_detach(item);
+    size_t index=l->sons.size-1;
+    if(index==0){
+        item->parent=(sublayout_t *)&l->l;
+        list_set_start_align(l,item);
+    }else{
+        item->parent=(sublayout_t *)l->sons.arr[index-1];
+        list_set_next_align(l,item);
+    }
+    return 1;
+}
+
 static int list_mouse_inside(const layout_list_t *l){
     float x=get_mouse_x();
     float y=get_mouse_y();
@@ -2896,6 +2922,10 @@ float list_get_slide(const layout_list_t *l){
         return 0.0f;
     }
     return list_scroll_offset(l);
+}
+
+float list_get_content_height(const layout_list_t *l){
+    return l!=NULL?list_content_extent(l):0.0f;
 }
 
 void list_set_slide(layout_list_t *l,float offset){

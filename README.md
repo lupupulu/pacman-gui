@@ -106,6 +106,8 @@ pkg-config --cflags sdl3 sdl3-ttf
 Makefile       构建规则（macOS 用 Homebrew 前缀 + CoreText，Linux 用 pkg-config + fontconfig）
 src/main.c     程序入口与主循环
 src/init.c/.h  主界面布局、selector、tabs 和页面创建
+src/pacman.c   包管理器后端注册表与统一包视图
+src/pacman.h    package_t、pacman_t 和后端接口
 src/sdlgui.c   窗口、鼠标、布局、绘制与高 DPI 处理
 src/sdlgui.h
 src/sdlgui_theme.c   主题、配色、字体缓存与 TOML 配置
@@ -429,6 +431,9 @@ widget_slider_t *slider = create_layout_slider(
 
 // 滚轮/代码滚动列表后，把滑块位置同步过去
 widget_slider_set(slider,list_get_slide(list));
+
+// 内容总长度未知时可以直接查询 list
+float content_height=list_get_content_height(list);
 ```
 
 - 滑块厚度取主题根层 `slider_width`；竖向时占父布局高度，横向时占父布局宽度。
@@ -475,19 +480,55 @@ layout_label_t *label = create_layout_label(
   - 未安装：`\\install install`
   - 已安装：上方 `\\update update`，下方 `\\delete delete`
 - maintainer 和 submitter 都为空时，整行人员信息不创建、不显示
+- license 为空时不创建许可证行
 - 按钮回调暂未接逻辑，只用于绘制测试
 
 `init.c` 里创建 tabs 和页面布局，`main.c` 只负责初始化和事件循环：
-- `package` 页：垂直 package 列表，可滚动
-- `installed` 页：空矩形
+- `package` 页：暂时为空矩形
+- `installed` 页：Homebrew 已安装包列表，可滚动，右侧带滑块
 - `settings` 页：空矩形
 
-package 列表直接作为 tabs 页面，不再套一层 `layout_t` 容器，避免子布局
-`y` 从 0 开始时被选择器遮住第一张卡片的包名。
+installed 页是一个容器，里面放 `layout_list_t` 和右侧 `widget_slider_t`；
+滑块通过 `list_get_content_height()` 获取内容总长度，并在页面更新时同步
+`list_get_slide()`。卡片宽度由所在的 `layout_list_t` 决定，内部标签和按钮会在
+`package_update()` 中按卡片宽度重新定位。Homebrew 包没有 maintainer/submitter 时，人员信息行
+会被省略。
 
-卡片宽度由所在的 `layout_list_t` 决定，内部标签和按钮会在 `package_update()`
-中按卡片宽度重新定位。测试数据里的 `zlib` 没有 maintainer 和 submitter，
-可用来确认人员信息行会被省略。
+## 包管理器后端
+
+`pacman.c` 维护包管理器后端列表，`pacman_homebrew.c` 只是其中一个后端。
+installed 页不直接引用 Homebrew 后端，而是通过 `pacman.h` 的统一接口遍历：
+
+```c
+size_t count=pacman_package_count();
+for(size_t i=0;i<count;i++){
+    package_t *pkg=pacman_package_at(i);
+}
+```
+
+`pacman_homebrew.c` 实现了 `pacman_t` 的 Homebrew 版本：
+
+- `init()` 调用 `brew list --versions --formula`
+- 再调用 `brew list --versions --cask`
+- 每个包创建一条 `package_t`
+- `pkg_cnt == 0` 时 installed 页为空
+- `stat` 统一设为 `PKG_STAT_INSTALLED`
+- `from = "homebrew"`
+- `meta_data` 标记 `formula` 或 `cask`
+
+当前只读取 brew 列表中的名称和版本；Homebrew CLI 文本没有 license、
+maintainer、submitter、描述等字段，因此这些内容会使用卡片的空值回退。
+
+入口：
+
+```c
+pacman_t *backend=pacman_homebrew();
+backend->init();
+```
+
+`pacman_init_all()` 会初始化所有已注册后端；`init_ui()` 只通过
+`pacman_package_count()/pacman_package_at()` 生成 installed 列表，
+`init_ui_quit()` 调用 `pacman_quit_all()` 释放所有后端数据。
 
 ## Tabs 控件
 

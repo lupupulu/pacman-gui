@@ -3,93 +3,109 @@
 #include "sdlgui_widget.h"
 #include "sdlgui_i18n.h"
 #include "pacman_gui.h"
+#include "pacman.h"
 #include "init.h"
 
-/* 仅用于绘制测试的软件包数据；安装/删除/更新逻辑尚未实现。 */
-static layout_list_t *create_test_package_list(layout_t *parent){
-    static char *maintainers_alice[]={"Alice",NULL};
-    static char *maintainers_carol[]={"Carol",NULL};
-    static char *maintainers_mozilla[]={"Mozilla",NULL};
-    static package_t packages[]={
-        {
-            .name="pacman",
-            .version="6.1.0",
-            .license="GPL-2.0",
-            .submitter="Bob",
-            .maintainers=maintainers_alice,
-            .stat=PKG_STAT_INSTALLED
-        },
-        {
-            .name="zlib",
-            .version="1.3.1",
-            .license="Zlib",
-            .submitter=NULL,
-            .maintainers=NULL,
-            .stat=PKG_STAT_NULL
-        },
-        {
-            .name="neovim",
-            .version="0.10.2",
-            .license="Apache-2.0",
-            .submitter="Dave",
-            .maintainers=maintainers_carol,
-            .stat=PKG_STAT_NULL
-        },
-        {
-            .name="firefox",
-            .version="132.0",
-            .license="MPL-2.0",
-            .submitter="Eve",
-            .maintainers=maintainers_mozilla,
-            .stat=PKG_STAT_INSTALLED
-        },
-        {
-            .name="htop",
-            .version="3.3.0",
-            .license="GPL-2.0",
-            .submitter="Grace",
-            .maintainers=maintainers_carol,
-            .stat=PKG_STAT_NULL
-        },
-        {
-            .name="ripgrep",
-            .version="14.1.1",
-            .license="MIT",
-            .submitter="Heidi",
-            .maintainers=maintainers_alice,
-            .stat=PKG_STAT_NULL
-        }
-    };
-
-    size_t count=sizeof(packages)/sizeof(packages[0]);
-    layout_rect_t *cards[sizeof(packages)/sizeof(packages[0])];
-    for(size_t i=0;i<count;i++){
-        cards[i]=create_layout_package(&packages[i]);
-        if(cards[i]==NULL){
-            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
-                         _("Failed to create package card %zu"),i);
-            return NULL;
-        }
-    }
-
+/* 通过 pacman.c 的统一包视图生成 installed 列表。 */
+static layout_list_t *create_package_list(layout_t *parent){
     layout_list_t *list=create_layout_list(
         parent,
         0.0f,
         0.0f,
-        make_align(0,0,1,1,0.0f,0.0f,1.0f,1.0f),
+        make_align(3,3,1,1,0.0f,0.0f,1.0f,1.0f),
         0,
-        (layout_t *)cards[0],
-        (layout_t *)cards[1],
-        (layout_t *)cards[2],
-        (layout_t *)cards[3],
-        (layout_t *)cards[4],
-        (layout_t *)cards[5],
         NULL
     );
     if(list==NULL){
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("Failed to create package list"));
+        return NULL;
+    }
+    size_t count=pacman_package_count();
+    for(size_t i=0;i<count;i++){
+        package_t *package=pacman_package_at(i);
+        if(package==NULL){
+            continue;
+        }
+        layout_rect_t *card=create_layout_package(package);
+        if(card==NULL||!list_add(list,(layout_t *)card)){
+            if(card!=NULL){
+                delete_layout((layout_t *)card);
+            }
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("Failed to create package card %zu"),i);
+        }
     }
     return list;
+}
+
+typedef struct {
+    layout_rect_t rect;
+    layout_list_t *list;
+    widget_slider_t *slider;
+}installed_page_t;
+
+static void installed_page_draw(void *p){
+    installed_page_t *page=p;
+    if(page!=NULL){
+        rect_draw(&page->rect);
+    }
+}
+
+static void installed_page_update(void *p){
+    installed_page_t *page=p;
+    if(page==NULL){
+        return;
+    }
+    layout_update(&page->rect.l);
+    if(page->list!=NULL&&page->slider!=NULL){
+        page->slider->all_height=list_get_content_height(page->list);
+        widget_slider_set(page->slider,list_get_slide(page->list));
+    }
+}
+
+static void installed_page_slide(float offset,void *data){
+    list_set_slide((layout_list_t *)data,offset);
+}
+
+static installed_page_t *create_installed_page(void){
+    align_t zero=make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f);
+    installed_page_t *page=create_layout(
+        sizeof(*page),
+        NULL,
+        0.0f,
+        0.0f,
+        installed_page_draw,
+        installed_page_update,
+        NULL,
+        NULL,
+        zero
+    );
+    if(page==NULL){
+        return NULL;
+    }
+
+    page->rect.color=get_color(COLOR_MAIN);
+
+    page->list=create_package_list((layout_t *)&page->rect.l);
+    if(page->list==NULL){
+        delete_layout((layout_t *)page);
+        return NULL;
+    }
+
+    page->slider=create_layout_slider(
+        (layout_t *)&page->rect.l,
+        make_align(1,3,0,1,-get_theme()->slider_width,0.0f,0.0f,1.0f),
+        zero,
+        list_get_content_height(page->list),
+        0,
+        installed_page_slide,
+        page->list
+    );
+    if(page->slider==NULL){
+        delete_layout((layout_t *)page);
+        return NULL;
+    }
+
+    return page;
 }
 
 static void main_tabs_size(float *w,float *h){
@@ -97,16 +113,21 @@ static void main_tabs_size(float *w,float *h){
     *h=get_root_h();
 }
 
+void init_ui_quit(void){
+    pacman_quit_all();
+}
+
 int init_ui(void){
     update_root();
+    if(pacman_init_all()<=0){
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("No package backend initialized"));
+    }
 
     align_t zero=make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f);
 
-    /* 第一个页面直接就是 package 列表，避免多一层容器导致 y 偏移丢失。 */
-    layout_list_t *package_list=create_test_package_list(get_root_layout());
-
-    /* 另外两个页面暂时只画空矩形。 */
-    layout_rect_t *installed_page=create_layout_rect(NULL,0.0f,0.0f,zero,get_color(COLOR_MAIN));
+    /* package 页暂时留空；installed 页通过 pacman.c 的统一包视图读取。 */
+    layout_rect_t *package_page=create_layout_rect(NULL,0.0f,0.0f,zero,get_color(COLOR_MAIN));
+    installed_page_t *installed_page=create_installed_page();
     layout_rect_t *settings_page=create_layout_rect(NULL,0.0f,0.0f,zero,get_color(COLOR_MAIN));
 
     widget_selector_t *selector=widget_create_selector_title(
@@ -129,14 +150,14 @@ int init_ui(void){
     );
 
     if(tabs==NULL||selector==NULL||
-        package_list==NULL||installed_page==NULL||settings_page==NULL){
+        package_page==NULL||installed_page==NULL||settings_page==NULL){
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("Failed to create main tabs"));
         return 0;
     }
 
     layout_t *pages[]={
-        (layout_t *)package_list,
-        (layout_t *)installed_page,
+        (layout_t *)package_page,
+        (layout_t *)&installed_page->rect.l,
         (layout_t *)settings_page
     };
     widget_set_tabs(tabs,pages,3);

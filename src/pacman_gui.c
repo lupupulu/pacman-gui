@@ -83,8 +83,10 @@ static void package_update(void *p){
     package_set_box(&card->version->l,left,top+32.0f,info_width,20.0f);
     if(card->people!=NULL){
         package_set_box(&card->people->l,left,top+54.0f,info_width,20.0f);
-        package_set_box(&card->license->l,left,top+76.0f,info_width,20.0f);
-    }else{
+        if(card->license!=NULL){
+            package_set_box(&card->license->l,left,top+76.0f,info_width,20.0f);
+        }
+    }else if(card->license!=NULL){
         package_set_box(&card->license->l,left,top+60.0f,info_width,20.0f);
     }
 
@@ -163,7 +165,7 @@ layout_rect_t *create_layout_package(package_t *package){
     const char *name=package->name!=NULL?package->name:"-";
     const char *version=package->version!=NULL?package->version:"-";
     const char *submitter=package->submitter;
-    const char *license=package->license!=NULL?package->license:"-";
+    const char *license=package->license;
     char maintainer[256];
     maintainer[0]='\0';
     size_t maintainer_used=0;
@@ -209,11 +211,16 @@ layout_rect_t *create_layout_package(package_t *package){
         }
     }
 
-    char license_text[256];
-    snprintf(license_text,sizeof(license_text),"License: %s",license);
-    card->license=package_label((layout_t *)card,context,license_text,get_text_color(TEXT_CONTEXT));
+    int has_license=license!=NULL&&license[0]!='\0';
+    if(has_license){
+        char license_text[256];
+        snprintf(license_text,sizeof(license_text),"License: %s",license);
+        card->license=package_label((layout_t *)card,context,license_text,
+            get_text_color(TEXT_CONTEXT));
+    }
 
-    if(card->name==NULL||card->version==NULL||card->license==NULL){
+    if(card->name==NULL||card->version==NULL||
+       (has_license&&card->license==NULL)){
         delete_layout((layout_t *)card);
         return NULL;
     }
