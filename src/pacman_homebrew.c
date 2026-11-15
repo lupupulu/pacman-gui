@@ -19,42 +19,25 @@ static char *homebrew_strdup(const char *text){
     return copy;
 }
 
-static void homebrew_free(void){
-    pacman_t *backend=pacman_homebrew();
-    for(size_t i=0;i<backend->pkg_cnt;i++){
-        free(backend->pkgs[i].name);
-        free(backend->pkgs[i].version);
-    }
-    free(backend->pkgs);
-    backend->pkgs=NULL;
-    backend->pkg_cnt=0;
-}
-
+/* 读取一个 brew 条目并交给全局注册表，字段所有权同时转交 pkg_add()。 */
 static int homebrew_append(const char *name,const char *version,const char *meta){
-    pacman_t *backend=pacman_homebrew();
-    package_t *pkgs=realloc(backend->pkgs,(backend->pkg_cnt+1)*sizeof(*pkgs));
-    if(pkgs==NULL){
-        return 0;
-    }
-    backend->pkgs=pkgs;
+    package_t pkg;
+    memset(&pkg,0,sizeof(pkg));
 
-    package_t *pkg=&backend->pkgs[backend->pkg_cnt];
-    memset(pkg,0,sizeof(*pkg));
-    pkg->from="homebrew";
-    pkg->meta_data=(char *)meta;
-    pkg->name=homebrew_strdup(name);
-    pkg->version=homebrew_strdup(version);
-    pkg->stat=PKG_STAT_INSTALLED;
-    pkg->size=(unsigned long)-1;
+    pkg.from="homebrew";
+    pkg.meta_data=(char *)meta;
+    pkg.name=homebrew_strdup(name);
+    pkg.version=homebrew_strdup(version);
+    pkg.stat=PKG_STAT_INSTALLED;
+    pkg.size=(unsigned long)-1;
 
-    if(pkg->name==NULL||pkg->version==NULL){
-        free(pkg->name);
-        free(pkg->version);
-        memset(pkg,0,sizeof(*pkg));
+    if(pkg.name==NULL||pkg.version==NULL){
+        free(pkg.name);
+        free(pkg.version);
         return 0;
     }
 
-    backend->pkg_cnt++;
+    pkg_add(&pkg);
     return 1;
 }
 
@@ -80,14 +63,41 @@ static const char *homebrew_binary(void){
         }
     }
 
-    return "brew";
+    const char *search=getenv("PATH");
+    if(search!=NULL){
+        while(*search!='\0'){
+            const char *end=strchr(search,':');
+            size_t length=end!=NULL?(size_t)(end-search):strlen(search);
+            if(length>0&&length+6<sizeof(path)){
+                snprintf(path,sizeof(path),"%.*s/brew",(int)length,search);
+                if(access(path,X_OK)==0){
+                    return path;
+                }
+            }
+            if(end==NULL){
+                break;
+            }
+            search=end+1;
+        }
+    }
+
+    return NULL;
+}
+
+int pacman_homebrew_available(void){
+    return homebrew_binary()!=NULL;
 }
 
 /* 读取 `brew list --versions --formula/--cask` 的文本输出。
  * 每行格式：name version [version ...]，取最后一个版本。 */
 static int homebrew_list(const char *flag,const char *meta){
+    const char *binary=homebrew_binary();
+    if(binary==NULL){
+        return 0;
+    }
+
     char command[PATH_MAX+64];
-    snprintf(command,sizeof(command),"%s list --versions %s",homebrew_binary(),flag);
+    snprintf(command,sizeof(command),"\"%s\" list --versions %s",binary,flag);
 
     FILE *pipe=popen(command,"r");
     if(pipe==NULL){
@@ -157,25 +167,31 @@ static int homebrew_list(const char *flag,const char *meta){
 }
 
 static int homebrew_init(void){
-    homebrew_free();
-    int formula=homebrew_list("--formula","formula");
-    int cask=homebrew_list("--cask","cask");
-    return formula||cask;
+    return pacman_homebrew_available()?1:0;
+}
+
+static void homebrew_list_installed(void){
+    if(!pacman_homebrew_available()){
+        return;
+    }
+    homebrew_list("--formula","formula");
+    homebrew_list("--cask","cask");
 }
 
 static int homebrew_refresh(void){
-    return homebrew_init();
-}
-
-static void homebrew_quit(void){
-    homebrew_free();
+    if(!pacman_homebrew_available()){
+        return 0;
+    }
+    pkg_del_from("homebrew");
+    homebrew_list_installed();
+    return 1;
 }
 
 static pacman_t homebrew_backend={
     .name="homebrew",
     .init=homebrew_init,
     .refresh=homebrew_refresh,
-    .quit=homebrew_quit
+    .list_installed=homebrew_list_installed
 };
 
 pacman_t *pacman_homebrew(void){

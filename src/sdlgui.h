@@ -130,6 +130,7 @@ struct layout_t{
     unsigned mouse_tracking:1; // 鼠标离开后仍按住左键，继续跟踪到松开
     unsigned son_resizable:1; // sons是否可以被realloc
     unsigned need_free:1; // 是否需要free释放
+    unsigned draw_last:1; // 是否延后到同级之后再绘制（悬浮控件覆盖内容用）
 
     layout_t **sons;  // 依赖此布局的子布局
     size_t son_size;
@@ -395,6 +396,13 @@ typedef struct {
 
     size_t i;     // 渲染开始点指向的布局
     float start;  // 渲染开始点相对该布局的偏移量
+
+    /* 内容前/后留白（逻辑像素）。滚动到 0 时第一个 item 从
+     * list 前部 + front_offset 开始；滚到末尾时最后一个 item 在
+     * list 后部 - back_offset 结束。用于给悬浮 selector 让位，
+     * 同时让内容滚动时可以从它底下经过。 */
+    float front_offset;
+    float back_offset;
 }layout_list_t;
 
 /* create 时传入的子布局会从原 parent 摘下并交给 list 管理；

@@ -40,13 +40,8 @@ typedef struct {
 
 }package_t;
 
-
-void pkg_stat_update(package_t *pkg);
-
 typedef struct {
     char *name; // 管理器名
-    package_t *pkgs; // 管理的包
-    size_t pkg_cnt;
 
     int (*init)(void);
     int (*init_settings)(void *tab);
@@ -55,7 +50,9 @@ typedef struct {
     int (*update_all)(void); // 更新所有包（对应pacman -Syu）
     void (*quit)(void);
 
-    int (*find_package_from_repo)(const char *key,package_t *pkgs,unsigned int cnt);
+    /* 枚举所有已安装包并通过 pkg_add() 加入全局 pkg_installed。 */
+    void (*list_installed)(void);
+
     int (*install_package)(package_t *pkg);
     int (*update_package)(package_t *pkg);
     int (*uninstall_package)(package_t *pkg);
@@ -68,9 +65,25 @@ int pacman_init_all(void);
 void pacman_quit_all(void);
 size_t pacman_backend_count(void);
 pacman_t *pacman_backend_at(size_t index);
+/* 按 pacman_t.name 查找已注册后端；找不到返回 NULL。 */
+pacman_t *pacman_backend_find(char *name);
 
-/* installed 卡片使用的统一包视图：按顺序跨所有后端遍历。 */
+/* installed 卡片使用的统一包视图：全局 pkg_installed 按 name 升序排列。
+ * pacman_package_at() 返回的指针在下一次 pkg_add/pkg_del/pkg_del_from 前有效。 */
 size_t pacman_package_count(void);
 package_t *pacman_package_at(size_t index);
+
+void pkg_stat_update(package_t *pkg);
+
+/* pkg_add 接管 pkg->name/version/description/license/submitter 的所有权；
+ * from/meta_data 视为后端借用的常量字符串。重复或插入失败时释放这些字段。 */
+void pkg_add(package_t *pkg);
+
+/* 按 from/name/meta_data/version 全部一致查找并删除；找不到时清空该管理器
+ * 的包并重新调用它的 list_installed()。 */
+void pkg_del(package_t *pkg);
+
+/* 删除所有 from == name 的包。 */
+void pkg_del_from(char *name);
 
 #endif

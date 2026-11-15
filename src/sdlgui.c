@@ -581,8 +581,18 @@ static void draw_layout(layout_t *l){
     if(l->draw){
         l->draw(l);
     }
+
+    /* draw_last 的同级延后绘制：悬浮 selector 需要盖在页面内容上，
+     * 但不改变 sons 顺序，避免影响删除顺序和命中判定的生命周期。 */
     for(size_t i=0;i<l->son_size;i++){
-        draw_layout(l->sons[i]);
+        if(l->sons[i]!=NULL&&!l->sons[i]->draw_last){
+            draw_layout(l->sons[i]);
+        }
+    }
+    for(size_t i=0;i<l->son_size;i++){
+        if(l->sons[i]!=NULL&&l->sons[i]->draw_last){
+            draw_layout(l->sons[i]);
+        }
     }
 
     draw_clip_end(&old,had_clip);
@@ -685,8 +695,11 @@ int layout_attach(layout_t *child,layout_t *parent){
 }
 
 void delete_layout(layout_t *l){
-    for(size_t i=0;i<l->son_size;i++){
-        delete_layout(l->sons[i]);
+    /* 逆序删除：后创建的子布局可能持有对先创建兄弟的回调/指针
+     * （例如 tabs 会恢复外部 selector 的 callback），逆序能保证被引用的
+     * 对象还活着；和构造顺序相反的析构也更符合栈式生命周期。 */
+    for(size_t i=l->son_size;i>0;i--){
+        delete_layout(l->sons[i-1]);
     }
     if(l->son_resizable){
         free(l->sons);
@@ -1014,6 +1027,15 @@ static SDL_FColor draft_fcolor(unsigned color){
     return f;
 }
 
+/* 逻辑坐标对齐到物理像素网格，避免半像素位置让文字/边缘发虚。 */
+static float draft_snap_pixel(float value){
+    float scale=sdlgui_get_scale();
+    if(scale<=0.0f){
+        scale=1.0f;
+    }
+    return SDL_roundf(value*scale)/scale;
+}
+
 static int draft_has_border(unsigned color){
     return (color&0xFF)!=0;
 }
@@ -1073,112 +1095,141 @@ static void draft_fill_circle(float cx,float cy,float radius,SDL_Color color){
     draft_fill_circle_geometry(cx,cy,radius,color);
 }
 
-/* 胶囊形：中间矩形 + 两端圆形。用于全圆角（包括负半径）的情况。 */
-static void draft_fill_capsule(float x,float y,float w,float h,SDL_Color color){
-    if(w<=0.0f||h<=0.0f){
+/* 圆角矩形的抗锯齿填充：
+ * - 直边对齐到物理像素，保证 1px 边框和长边完全锐利；
+ * - 圆角按每一行的解析覆盖率绘制，边缘像素带部分 alpha，
+ *   不再用三角扇直接切出 1px 台阶。
+ * 坐标全部先换算到物理像素，避免 ui_scale 不是整数时出现半像素偏差。 */
+static void draft_fill_pixel_rect(int x,int y,int w,int h,SDL_Color color,float coverage){
+    if(w<=0||h<=0||coverage<=0.0f){
         return;
     }
-
-    SDL_SetRenderDrawColor(renderer,color.r,color.g,color.b,color.a);
-    if(w>h){
-        float r=h/2.0f;
-        SDL_FRect middle={.x=x+r,.y=y,.w=w-r*2.0f,.h=h};
-        if(middle.w>0.0f){
-            SDL_RenderFillRect(renderer,&middle);
-        }
-        draft_fill_circle_geometry(x+r,y+r,r,color);
-        draft_fill_circle_geometry(x+w-r,y+r,r,color);
-    }else if(w<h){
-        float r=w/2.0f;
-        SDL_FRect middle={.x=x,.y=y+r,.w=w,.h=h-r*2.0f};
-        if(middle.h>0.0f){
-            SDL_RenderFillRect(renderer,&middle);
-        }
-        draft_fill_circle_geometry(x+r,y+r,r,color);
-        draft_fill_circle_geometry(x+r,y+h-r,r,color);
-    }else{
-        draft_fill_circle_geometry(x+w/2.0f,y+h/2.0f,w/2.0f,color);
+    if(coverage>1.0f){
+        coverage=1.0f;
     }
+
+    float scale=sdlgui_get_scale();
+    if(scale<=0.0f){
+        scale=1.0f;
+    }
+
+    SDL_FRect rect={
+        .x=(float)x/scale,
+        .y=(float)y/scale,
+        .w=(float)w/scale,
+        .h=(float)h/scale
+    };
+    SDL_SetRenderDrawColor(renderer,color.r,color.g,color.b,
+        (Uint8)SDL_roundf((float)color.a*coverage));
+    SDL_RenderFillRect(renderer,&rect);
 }
 
-#define DRAFT_RRECT_MAX_SEGMENTS 64
-
-/* 实心圆角矩形：用中心三角扇覆盖圆角外轮廓。
- * 不再逐行 sqrt 扫描，避免圆弧处出现横向台阶。 */
 static void draft_fill_rrect(float x,float y,float w,float h,float r,SDL_Color color){
-    if(w<=0.0f||h<=0.0f){
-        return;
-    }
-    float max_r=(w<h?w:h)/2.0f;
-    if(r>max_r){ r=max_r; }
-    if(r<0.0f){ r=0.0f; }
-
-    if(r<=0.0f){
-        SDL_SetRenderDrawColor(renderer,color.r,color.g,color.b,color.a);
-        SDL_FRect rect={.x=x,.y=y,.w=w,.h=h};
-        SDL_RenderFillRect(renderer,&rect);
+    if(w<=0.0f||h<=0.0f||color.a==0){
         return;
     }
 
-    int segments=(int)(r*1.5f);
-    if(segments<6){
-        segments=6;
-    }else if(segments>DRAFT_RRECT_MAX_SEGMENTS){
-        segments=DRAFT_RRECT_MAX_SEGMENTS;
+    float scale=sdlgui_get_scale();
+    if(scale<=0.0f){
+        scale=1.0f;
     }
 
-    enum{ MAX_POINTS=4*(DRAFT_RRECT_MAX_SEGMENTS+1) };
-    SDL_Vertex vertices[MAX_POINTS+1];
-    int indices[MAX_POINTS*3];
-    SDL_FColor fcolor={
-        .r=(float)color.r/255.0f,
-        .g=(float)color.g/255.0f,
-        .b=(float)color.b/255.0f,
-        .a=(float)color.a/255.0f
-    };
+    int px=(int)SDL_roundf(x*scale);
+    int py=(int)SDL_roundf(y*scale);
+    int pw=(int)SDL_roundf(w*scale);
+    int ph=(int)SDL_roundf(h*scale);
+    if(pw<=0||ph<=0){
+        return;
+    }
 
-    int count=0;
-    vertices[count++]=(SDL_Vertex){
-        .position={x+w/2.0f,y+h/2.0f},
-        .color=fcolor,
-        .tex_coord={0.0f,0.0f}
-    };
+    float pr=r*scale;
+    float max_r=(float)(pw<ph?pw:ph)*0.5f;
+    if(pr>max_r){
+        pr=max_r;
+    }
+    if(pr<0.0f){
+        pr=0.0f;
+    }
 
-    const float centers[4][2]={
-        {x+r,y+r},
-        {x+w-r,y+r},
-        {x+w-r,y+h-r},
-        {x+r,y+h-r}
-    };
-    const float starts[4]={
-        SDL_PI_F,
-        SDL_PI_F*1.5f,
-        0.0f,
-        SDL_PI_F*0.5f
-    };
+    SDL_SetRenderDrawBlendMode(renderer,SDL_BLENDMODE_BLEND);
 
-    for(int corner=0;corner<4;corner++){
-        for(int i=0;i<=segments;i++){
-            float angle=starts[corner]+SDL_PI_F*0.5f*(float)i/(float)segments;
-            vertices[count++]=(SDL_Vertex){
-                .position={
-                    centers[corner][0]+SDL_cosf(angle)*r,
-                    centers[corner][1]+SDL_sinf(angle)*r
-                },
-                .color=fcolor,
-                .tex_coord={0.0f,0.0f}
-            };
+    /* 中间没有圆角的行合并成一条矩形，避免高控件产生大量绘制调用 */
+    int band_start=-1;
+    for(int j=0;j<ph;j++){
+        float yc=(float)py+(float)j+0.5f;
+        float left=(float)px;
+        float right=(float)(px+pw);
+        int rounded=0;
+
+        if(pr>0.0f&&yc<(float)py+pr){
+            float dy=(float)py+pr-yc;
+            float dx=SDL_sqrtf(pr*pr-dy*dy);
+            left=(float)px+pr-dx;
+            right=(float)(px+pw)-pr+dx;
+            rounded=1;
+        }else if(pr>0.0f&&yc>(float)(py+ph)-pr){
+            float dy=yc-((float)(py+ph)-pr);
+            float dx=SDL_sqrtf(pr*pr-dy*dy);
+            left=(float)px+pr-dx;
+            right=(float)(px+pw)-pr+dx;
+            rounded=1;
         }
+
+        if(!rounded){
+            if(band_start<0){
+                band_start=j;
+            }
+            continue;
+        }
+
+        if(band_start>=0){
+            draft_fill_pixel_rect(px,py+band_start,pw,j-band_start,color,1.0f);
+            band_start=-1;
+        }
+
+        int il=(int)SDL_floorf(left);
+        int ir=(int)SDL_floorf(right);
+        if(il<px){
+            il=px;
+        }
+        if(ir>px+pw-1){
+            ir=px+pw-1;
+        }
+        if(il>ir){
+            continue;
+        }
+
+        if(il==ir){
+            /* 整行落在一个像素里：直接按覆盖长度取 alpha */
+            draft_fill_pixel_rect(il,py+j,1,1,color,right-left);
+            continue;
+        }
+
+        float lcov=(float)(il+1)-left;
+        float rcov=right-(float)ir;
+        if(lcov>1.0f){
+            lcov=1.0f;
+        }
+        if(lcov<0.0f){
+            lcov=0.0f;
+        }
+        if(rcov>1.0f){
+            rcov=1.0f;
+        }
+        if(rcov<0.0f){
+            rcov=0.0f;
+        }
+
+        draft_fill_pixel_rect(il,py+j,1,1,color,lcov);
+        if(ir-il>1){
+            draft_fill_pixel_rect(il+1,py+j,ir-il-1,1,color,1.0f);
+        }
+        draft_fill_pixel_rect(ir,py+j,1,1,color,rcov);
     }
 
-    int perimeter=count-1;
-    for(int i=0;i<perimeter;i++){
-        indices[i*3]=0;
-        indices[i*3+1]=i+1;
-        indices[i*3+2]=(i+1==perimeter)?1:i+2;
+    if(band_start>=0){
+        draft_fill_pixel_rect(px,py+band_start,pw,ph-band_start,color,1.0f);
     }
-
-    SDL_RenderGeometry(renderer,NULL,vertices,count,indices,perimeter*3);
 }
 
 draft_default_t *draft_create_default(draw_func draw,align_t align,float w,float h,unsigned color,unsigned border_color){
@@ -1373,22 +1424,8 @@ void draft_draw_rrect(void *p){
         r=max_r;
     }
 
-    /* 全圆角用“矩形 + 两个圆”绘制，避免逐行扫描在圆弧处产生台阶。
-     * 负半径和 auto_radius 都按全圆角处理。 */
-    int capsule=d->auto_radius||(r>=max_r-0.01f);
-    if(capsule){
-        if(draft_has_border(d->border_color)){
-            draft_fill_capsule(d->x,d->y,d->width,d->height,draft_color(d->border_color));
-            if(d->width>2.0f&&d->height>2.0f){
-                draft_fill_capsule(d->x+1.0f,d->y+1.0f,d->width-2.0f,d->height-2.0f,draft_color(d->color));
-            }
-        }else{
-            draft_fill_capsule(d->x,d->y,d->width,d->height,draft_color(d->color));
-        }
-        return;
-    }
-
-    if(draft_has_border(d->border_color)){
+    /* border_color 与填充同色时只画一遍：按钮用这种写法表示“无边框” */
+    if(draft_has_border(d->border_color)&&d->border_color!=d->color){
         draft_fill_rrect(d->x,d->y,d->width,d->height,r,draft_color(d->border_color));
         if(d->width>2.0f&&d->height>2.0f){
             float inner_r=(r>1.0f)?r-1.0f:0.0f;
@@ -1454,19 +1491,52 @@ static char *draft_text_single_line(const char *context){
     return copy;
 }
 
+/* 抬高字形边缘覆盖率的对比度：小字号在 1x 屏幕上会有一圈很淡的灰边，
+ * 把 0~1 之间的覆盖率再加一点，笔画更实，视觉上更锐利。
+ * 全透明和全不透明的像素保持不变。 */
+static SDL_Surface *draft_text_sharpen(SDL_Surface *surface){
+    if(surface==NULL){
+        return NULL;
+    }
+    const SDL_PixelFormatDetails *details=SDL_GetPixelFormatDetails(surface->format);
+    if(details==NULL||!SDL_LockSurface(surface)){
+        return surface;
+    }
+    SDL_Palette *palette=SDL_GetSurfacePalette(surface);
+
+    Uint8 *base=(Uint8 *)surface->pixels;
+    for(int y=0;y<surface->h;y++){
+        Uint32 *row=(Uint32 *)(base+(size_t)y*(size_t)surface->pitch);
+        for(int x=0;x<surface->w;x++){
+            Uint8 r=0,g=0,b=0,a=0;
+            SDL_GetRGBA(row[x],details,palette,&r,&g,&b,&a);
+            float coverage=(float)a/255.0f;
+            coverage=coverage+0.35f*coverage*(1.0f-coverage);
+            a=(Uint8)SDL_roundf(coverage*255.0f);
+            row[x]=SDL_MapRGBA(details,palette,r,g,b,a);
+        }
+    }
+
+    SDL_UnlockSurface(surface);
+    return surface;
+}
+
 static SDL_Surface *draft_text_render_segment(draft_text_t *d,const char *text,size_t length,SDL_Color color){
     if(length==0){
         return NULL;
     }
+    SDL_Surface *surface=NULL;
     if(d->width_limit>0.0f){
         /* 宽度限制是逻辑坐标，换行宽度要换算成物理像素 */
         int wrap=(int)(d->width_limit*sdlgui_get_scale()+0.5f);
         if(wrap<1){
             wrap=1;
         }
-        return TTF_RenderText_Blended_Wrapped(d->font,text,length,color,wrap);
+        surface=TTF_RenderText_Blended_Wrapped(d->font,text,length,color,wrap);
+    }else{
+        surface=TTF_RenderText_Blended(d->font,text,length,color);
     }
-    return TTF_RenderText_Blended(d->font,text,length,color);
+    return draft_text_sharpen(surface);
 }
 
 /* 计算最终渲染宽高（逻辑坐标）；height_limit>0 时高度按裁剪后的结果算 */
@@ -1688,7 +1758,7 @@ static void draft_text_draw_direct(draft_text_t *d){
                     src_height=(float)surface->h;
                 }
                 SDL_FRect src={.x=0,.y=0,.w=(float)surface->w,.h=src_height};
-                SDL_FRect dst={.x=SDL_roundf(d->x),.y=SDL_roundf(y),
+                SDL_FRect dst={.x=draft_snap_pixel(d->x),.y=draft_snap_pixel(y),
                                .w=(float)surface->w/scale,.h=draw_height};
                 SDL_RenderTexture(renderer,tex,&src,&dst);
                 SDL_DestroyTexture(tex);
@@ -1757,7 +1827,7 @@ void draft_draw_text(void *p){
         src_height=d->cache_height;
     }
     SDL_FRect src={.x=0,.y=0,.w=d->cache_width,.h=src_height};
-    SDL_FRect dst={.x=SDL_roundf(d->x),.y=SDL_roundf(d->y),.w=width,.h=height};
+    SDL_FRect dst={.x=draft_snap_pixel(d->x),.y=draft_snap_pixel(d->y),.w=width,.h=height};
     SDL_RenderTexture(renderer,d->cache,&src,&dst);
 }
 
@@ -1917,7 +1987,7 @@ static SDL_Surface *icon_text_render_segment(TTF_Font *font,const char *text,siz
 
     SDL_Surface *surface=TTF_RenderText_Blended(font,copy,length,color);
     free(copy);
-    return surface;
+    return draft_text_sharpen(surface);
 }
 
 static int icon_text_add_segment(icon_text_parts_t *parts,TTF_Font *font,const char *text,size_t length,SDL_Color color){
@@ -2149,9 +2219,10 @@ draft_texture_t *draft_create_icon_with_text(align_t align,TTF_Font *font,char *
     for(size_t i=0;i<parts.size;i++){
         icon_text_part_t *part=&parts.arr[i];
         if(part->is_icon){
+            /* 合成目标是物理像素，垂直居中取整，避免 0.5px 偏移 */
             SDL_FRect dst={
-                .x=x,
-                .y=((float)target_height-(float)part->height)*0.5f,
+                .x=SDL_roundf(x),
+                .y=SDL_roundf(((float)target_height-(float)part->height)*0.5f),
                 .w=(float)part->width,
                 .h=(float)part->height
             };
@@ -2163,8 +2234,8 @@ draft_texture_t *draft_create_icon_with_text(align_t align,TTF_Font *font,char *
                 /* 文字段按原始像素 1:1 画进合成纹理，不参与线性缩放 */
                 SDL_SetTextureScaleMode(tex,SDL_SCALEMODE_NEAREST);
                 SDL_FRect dst={
-                    .x=x,
-                    .y=((float)target_height-(float)part->surface->h)*0.5f,
+                    .x=SDL_roundf(x),
+                    .y=SDL_roundf(((float)target_height-(float)part->surface->h)*0.5f),
                     .w=(float)part->surface->w,
                     .h=(float)part->surface->h
                 };
@@ -2638,8 +2709,9 @@ static float list_view_extent(const layout_list_t *l){
     return l->direction?l->l.width:l->l.height;
 }
 
+/* 内容总长度包含前/后留白，滚动范围和滑块都按这个长度计算。 */
 static float list_content_extent(const layout_list_t *l){
-    float total=0.0f;
+    float total=l->front_offset+l->back_offset;
     for(size_t i=0;i<l->sons.size;i++){
         total+=list_item_extent(l,l->sons.arr[i]);
     }
@@ -2669,6 +2741,8 @@ static void list_set_scroll_offset(layout_list_t *l,float offset){
         offset=0.0f;
     }
 
+    /* start 是相对当前 item 的滚动量；front_offset 由
+     * list_set_start_align() 负责把第 0 个 item 整体下移。 */
     size_t i=0;
     while(i+1<l->sons.size){
         float extent=list_item_extent(l,l->sons.arr[i]);
@@ -2728,10 +2802,10 @@ static void list_set_start_align(layout_list_t *l,layout_t *item){
         item->align.horizon=2;
         item->align.horizon_offset=item->width;
         item->align.vertical=2;
-        item->align.vertical_offset=item->height-l->start;
+        item->align.vertical_offset=item->height-l->start+l->front_offset;
     }else{
         item->align.horizon=2;
-        item->align.horizon_offset=item->width-l->start;
+        item->align.horizon_offset=item->width-l->start+l->front_offset;
         item->align.vertical=2;
         item->align.vertical_offset=item->height;
     }
@@ -2865,6 +2939,8 @@ layout_list_t *create_layout_list(void *parent,float w,float h,align_t align,int
 
     l->direction=direction?1u:0u;
     l->can_be_slided=0;
+    l->front_offset=0.0f;
+    l->back_offset=0.0f;
     da_init(&l->sons);
     l->i=0;
     l->start=0.0f;

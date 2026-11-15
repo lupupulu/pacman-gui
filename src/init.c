@@ -119,9 +119,6 @@ void init_ui_quit(void){
 
 int init_ui(void){
     update_root();
-    if(pacman_init_all()<=0){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("No package backend initialized"));
-    }
 
     align_t zero=make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f);
 
@@ -153,6 +150,14 @@ int init_ui(void){
         package_page==NULL||installed_page==NULL||settings_page==NULL){
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("Failed to create main tabs"));
         return 0;
+    }
+
+    /* installed 列表前后各留出 selector 的高度：第一个 item 从 selector
+     * 下缘开始，滚动时可以从 selector 底下经过；末尾留出同样的空间。 */
+    if(installed_page->list!=NULL){
+        float inset=selector->l.l.height;
+        installed_page->list->front_offset=inset;
+        installed_page->list->back_offset=inset;
     }
 
     layout_t *pages[]={

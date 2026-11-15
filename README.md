@@ -12,11 +12,12 @@
 - Python 3.9+（构建时运行 `tools/ttf_to_c.py`，把字体嵌成 C）
 - 字体解析：macOS 用系统 CoreText；Linux 用 fontconfig
 - gettext（可选，仅用于本地化）
+- libalpm（可选，Linux 上用于读取 pacman 已安装包；Arch 的 `pacman` 包提供）
 
 Arch Linux：
 
 ```sh
-sudo pacman -S sdl3 sdl3_ttf fontconfig
+sudo pacman -S sdl3 sdl3_ttf fontconfig pacman
 ```
 
 macOS（Homebrew）：
@@ -49,7 +50,9 @@ make OPT=-O3 LTO=1
 
 `make` 在 macOS 上没有装 pkg-config 也能工作：Makefile 会退回
 `$(brew --prefix)` 下的 `include/` 和 `lib/`；装了 pkg-config 则自动使用
-`sdl3` 和 `sdl3-ttf`（或 `SDL3_ttf`）模块。
+`sdl3` 和 `sdl3-ttf`（或 `SDL3_ttf`）模块。Linux 上如果 `pkg-config` 能找到
+`libalpm`，Makefile 会定义 `HAVE_LIBALPM`、编译 alpm 后端并链接 `-lalpm`；
+找不到时不编译该后端，`pacman.c` 里对应的注册分支也不会生效。
 
 macOS 上 `make app` 会生成标准应用包：
 
@@ -108,6 +111,8 @@ src/main.c     程序入口与主循环
 src/init.c/.h  主界面布局、selector、tabs 和页面创建
 src/pacman.c   包管理器后端注册表与统一包视图
 src/pacman.h    package_t、pacman_t 和后端接口
+src/pacman_alpm.c/.h      libalpm 已安装包后端
+src/pacman_homebrew.c/.h  Homebrew 已安装包后端
 src/sdlgui.c   窗口、鼠标、布局、绘制与高 DPI 处理
 src/sdlgui.h
 src/sdlgui_theme.c   主题、配色、字体缓存与 TOML 配置
@@ -436,6 +441,12 @@ widget_slider_set(slider,list_get_slide(list));
 float content_height=list_get_content_height(list);
 ```
 
+- `front_offset` / `back_offset` 是列表内容的前/后留白：滚动为 0 时第一个
+  item 从 `front_offset` 之后开始，滚到末尾时最后一个 item 在 `back_offset`
+  之前结束；`list_get_content_height()` 和滚动范围都包含这两段空间。
+- 需要让内容从悬浮控件底下经过时，把列表铺满父布局，再用
+  `front_offset` 给第一个 item 让位；父布局裁剪到整块区域，悬浮控件最后绘制。
+
 - 滑块厚度取主题根层 `slider_width`；竖向时占父布局高度，横向时占父布局宽度。
 - `all_height` 大于当前视口长度时才显示并响应鼠标；内容不足时自动隐藏且不触发回调。
 - `lasting_time` 为鼠标停止操作后保持显示的毫秒数，`0` 表示始终显示；
@@ -485,19 +496,30 @@ layout_label_t *label = create_layout_label(
 
 `init.c` 里创建 tabs 和页面布局，`main.c` 只负责初始化和事件循环：
 - `package` 页：暂时为空矩形
-- `installed` 页：Homebrew 已安装包列表，可滚动，右侧带滑块
+- `installed` 页：所有已注册后端的已安装包列表，可滚动，右侧带滑块
 - `settings` 页：空矩形
 
 installed 页是一个容器，里面放 `layout_list_t` 和右侧 `widget_slider_t`；
 滑块通过 `list_get_content_height()` 获取内容总长度，并在页面更新时同步
 `list_get_slide()`。卡片宽度由所在的 `layout_list_t` 决定，内部标签和按钮会在
-`package_update()` 中按卡片宽度重新定位。Homebrew 包没有 maintainer/submitter 时，人员信息行
-会被省略。
+`package_update()` 中按卡片宽度重新定位。后端没有提供 maintainer/submitter 时，
+人员信息行会被省略。
+
+页面与 tabs 一样大，selector 浮在页面之上。`widget_create_tabs()` 会把传入的
+selector 标记为 `draw_last`，保证它晚于页面绘制。`installed_page` 把列表的
+`front_offset`/`back_offset` 设为 selector 高度：第一个 item 从 selector 下缘
+开始，滚动时可以从 selector 底下经过；末尾也留出同样的空间。
+
+```c
+installed_page->list->front_offset=selector->l.l.height;
+installed_page->list->back_offset=selector->l.l.height;
+```
 
 ## 包管理器后端
 
-`pacman.c` 维护包管理器后端列表，`pacman_homebrew.c` 只是其中一个后端。
-installed 页不直接引用 Homebrew 后端，而是通过 `pacman.h` 的统一接口遍历：
+`pacman.c` 维护已注册后端列表，以及一个所有后端共用的全局已安装包数组
+`pkg_installed`。installed 页不直接引用具体后端，而是通过 `pacman.h` 的
+统一接口遍历：
 
 ```c
 size_t count=pacman_package_count();
@@ -506,29 +528,67 @@ for(size_t i=0;i<count;i++){
 }
 ```
 
+`pkg_installed` 以 `package_t.name` 升序排列，增删由 `pacman.c` 统一负责：
+
+- `pkg_add()` 把包插入有序位置；如果 `from/name/meta_data/version` 全部相同
+  的包已经存在，说明该后端的缓存过期，会先 `pkg_del_from(pkg->from)` 再调用
+  后端的 `list_installed()` 重建。
+- `pkg_del()` 按这四项精确匹配并删除；找不到时同样触发对应管理器的重建。
+- `pkg_del_from()` 删除 `from` 等于给定管理器名的所有包。
+- `pkg_add()` 接管 `name/version/description/license/submitter` 的所有权；
+  `from/meta_data` 是后端借用的常量字符串，注册表不释放它们。
+
+`pacman_backend_find("alpm")` 按 `pacman_t.name` 查找已注册后端。
+
+默认注册逻辑在 `register_default_backends()` 中：
+
+- `pacman_alpm_available()` 为真时注册 libalpm 后端；
+- `pacman_homebrew_available()` 为真时注册 Homebrew 后端；
+- 两个条件都不满足时后端列表为空，installed 页保持空列表。
+
+因此没有安装 Homebrew 的系统不会注册 Homebrew 后端，也不会执行 `brew` 命令。
+
+### libalpm 后端
+
+`pacman_alpm.c` 用于读取本机 pacman 本地数据库：
+
+- 只有编译时检测到 `libalpm`，并且 `/var/lib/pacman/local` 可读时才启用；
+- `init()` 用 `alpm_initialize("/","/var/lib/pacman/",&err)` 打开数据库；
+- `list_installed()` 通过 `alpm_get_localdb()` / `alpm_db_get_pkgcache()`
+  遍历已安装包，并用 `pkg_add()` 加入全局数组；
+- 填入名称、版本、描述、许可证、packager、安装大小；
+- `stat = PKG_STAT_INSTALLED`，`from = "alpm"`。
+
+Makefile 通过 `pkg-config --exists libalpm` 做编译期判断：找到时定义
+`HAVE_LIBALPM=1`、编译 `pacman_alpm.c` 并链接 `-lalpm`；没找到时不把该源文件
+加入 `SRCS`。`pacman.c` 用 `#ifdef HAVE_LIBALPM` 决定是否包含头文件并注册后端。
+
+### Homebrew 后端
+
+Makefile 在构建时检查 `PATH`、`HOMEBREW_PREFIX`、`/opt/homebrew`、
+`/usr/local` 和 `/home/linuxbrew` 下有没有 `brew`：找到就定义
+`HAVE_HOMEBREW=1` 并编译 `pacman_homebrew.c`，否则不把该源文件加入 `SRCS`。
+交叉编译或打包机没装 brew 时，可以用 `make HAVE_HOMEBREW=1` 强制编入；
+想明确排除时用 `make HAVE_HOMEBREW=0`。
+
 `pacman_homebrew.c` 实现了 `pacman_t` 的 Homebrew 版本：
 
-- `init()` 调用 `brew list --versions --formula`
-- 再调用 `brew list --versions --cask`
-- 每个包创建一条 `package_t`
-- `pkg_cnt == 0` 时 installed 页为空
-- `stat` 统一设为 `PKG_STAT_INSTALLED`
-- `from = "homebrew"`
-- `meta_data` 标记 `formula` 或 `cask`
+- `pacman_homebrew_available()` 依次检查 `HOMEBREW_PREFIX/bin/brew`、
+  `/opt/homebrew/bin/brew`、`/usr/local/bin/brew`、
+  `/home/linuxbrew/.linuxbrew/bin/brew` 和 `PATH`；
+- 找到 brew 才会注册后端，`init()` 只检查 brew 是否可用，
+  `list_installed()` 调用 `brew list --versions --formula` 和
+  `brew list --versions --cask`，再通过 `pkg_add()` 加入全局数组；
+- 每个包创建一条 `package_t`，`stat` 统一设为 `PKG_STAT_INSTALLED`，
+  `from = "homebrew"`，`meta_data` 标记 `formula` 或 `cask`；
+- Homebrew CLI 文本没有 license、maintainer、submitter、描述等字段，这些内容
+  使用卡片的空值回退。
 
-当前只读取 brew 列表中的名称和版本；Homebrew CLI 文本没有 license、
-maintainer、submitter、描述等字段，因此这些内容会使用卡片的空值回退。
-
-入口：
-
-```c
-pacman_t *backend=pacman_homebrew();
-backend->init();
-```
-
-`pacman_init_all()` 会初始化所有已注册后端；`init_ui()` 只通过
+`pacman_init_all()` 会初始化所有已注册后端，并在 `init()` 成功后调用各自的
+`list_installed()` 填充全局数组。`main()` 在 `sdlgui_init()` 之前调用它，
+所以 SDL/窗口初始化时包列表已经就绪；`init_ui()` 只通过
 `pacman_package_count()/pacman_package_at()` 生成 installed 列表，
-`init_ui_quit()` 调用 `pacman_quit_all()` 释放所有后端数据。
+`init_ui_quit()` 调用 `pacman_quit_all()` 释放后端并清空数组。
 
 ## Tabs 控件
 
@@ -565,7 +625,8 @@ widget_set_tabs(tabs, pages, 3);
 ```
 
 - selector 的 parent 为 `NULL` 时，tabs 才把它挂到自己下面并管理宽度
-- selector 已经挂在其他父布局下时，tabs 保持它的位置和宽度不变，只把内容区放到它的下边缘
+- selector 已经挂在其他父布局下时，tabs 保持它的位置和宽度不变；页面与 tabs
+  等大，tabs 会把 selector 标记为 `draw_last`，让它绘制在页面之上
 - tabs 会保存 selector 原来的 callback/data，覆盖为内部转发函数：
   先切换页面，再调用原 callback
 - 删除 tabs 时，外部 selector 的 callback/data 会恢复
@@ -760,14 +821,13 @@ SDL_RenderTexture(renderer, tex, NULL, &dst);
 `/System/Library/Fonts/PingFang.ttc`，Linux 可用
 `/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc`。
 
-## 后续：把 pacman 换成 brew
+## 后端扩展
 
-目前的仓库还只是 GUI 骨架，没有接包管理后端。接后端时建议把平台差异收在独立模块：
+平台/包管理器差异都收在独立后端模块里，布局和绘制层不直接引用 `alpm_*` 或
+`brew` 命令：
 
-- `src/backend.h`：定义查询/安装/删除/事务进度等回调；
-- `src/backend_alpm.c`：Linux 用 libalpm（`pacman -S pacman` 提供头文件与库）；
-- `src/backend_brew.c`：macOS 调用 `brew` 命令行（`brew info --json=v2`、
-  `brew install` 等）或 Homebrew 的 API。
+- `src/pacman_alpm.c`：Linux 用 libalpm 读取本地数据库；
+- `src/pacman_homebrew.c`：调用 `brew` 命令行读取 formula/cask。
 
-macOS 没有 libalpm，所以不要把 `alpm_*` 类型带进布局/绘制层；后台操作放到独立线程，
-通过队列或 `SDL_Event` 回传给主循环，避免阻塞渲染。
+后续接入安装、删除、更新或后台事务时，建议放到独立线程，通过队列或
+`SDL_Event` 回传给主循环，避免阻塞渲染。

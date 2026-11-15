@@ -27,15 +27,43 @@ FONT_OBJ := build/obj/pacman_pixel_font.o
 LOST_ICON_C   := build/lost_icon.c
 LOST_ICON_OBJ := build/obj/lost_icon.o
 
-OBJS    := $(patsubst $(SRCDIR)/%.c,build/obj/%.o,$(SRCS)) $(FONT_OBJ) $(LOST_ICON_OBJ)
-DEPS    := $(OBJS:.o=.d)
-
 CC       ?= cc
 PKGCONF  ?= pkg-config
 PYTHON   ?= python3
 
 UNAME_S := $(shell uname -s)
 HAVE_PKGCONFIG := $(shell command -v $(PKGCONF) >/dev/null 2>&1 && echo 1)
+HAVE_LIBALPM := 0
+ifeq ($(HAVE_PKGCONFIG),1)
+  ifeq ($(shell $(PKGCONF) --exists libalpm && echo 1),1)
+    HAVE_LIBALPM := 1
+  endif
+endif
+
+# Homebrew 后端：构建时看 PATH 和常见安装前缀里有没有 brew。
+# 打包/交叉编译时可以用 make HAVE_HOMEBREW=0 或 1 覆盖这个判断。
+HOMEBREW_BIN := $(shell command -v brew 2>/dev/null)
+ifeq ($(HOMEBREW_BIN),)
+  HOMEBREW_PREFIX_BIN := $(if $(HOMEBREW_PREFIX),$(HOMEBREW_PREFIX)/bin/brew)
+  HOMEBREW_BIN := $(firstword $(wildcard $(HOMEBREW_PREFIX_BIN) \
+      /opt/homebrew/bin/brew /usr/local/bin/brew \
+      /home/linuxbrew/.linuxbrew/bin/brew))
+endif
+HAVE_HOMEBREW := $(if $(HOMEBREW_BIN),1,0)
+
+# 平台后端的编译期选择：
+# - 检测到依赖/命令时在 CFLAGS 里定义 HAVE_* 宏，pacman.c 用 #ifdef 注册；
+# - 未启用的后端实现源文件不参与编译。
+SRCS := $(filter-out $(SRCDIR)/pacman_alpm.c $(SRCDIR)/pacman_homebrew.c,$(SRCS))
+ifeq ($(HAVE_LIBALPM),1)
+  SRCS += $(SRCDIR)/pacman_alpm.c
+endif
+ifeq ($(HAVE_HOMEBREW),1)
+  SRCS += $(SRCDIR)/pacman_homebrew.c
+endif
+
+OBJS    := $(patsubst $(SRCDIR)/%.c,build/obj/%.o,$(SRCS)) $(FONT_OBJ) $(LOST_ICON_OBJ)
+DEPS    := $(OBJS:.o=.d)
 
 # Homebrew 前缀：PATH 里没有 brew 时退回常见安装位置
 BREW_PREFIX ?= $(shell brew --prefix 2>/dev/null || (test -d /opt/homebrew && echo /opt/homebrew || echo /usr/local))
@@ -53,7 +81,7 @@ ifeq ($(LTO),1)
 endif
 
 # OPT/LTO/BUILD 改变时自动重建，避免把不同优化级别的 .o 混在一起。
-BUILD_FLAGS      := $(CC)|$(OPT)|$(LTO)|$(BUILD)
+BUILD_FLAGS      := $(CC)|$(OPT)|$(LTO)|$(BUILD)|$(HAVE_LIBALPM)|$(HAVE_HOMEBREW)
 BUILD_FLAGS_FILE := build/.build-flags
 BUILD_FLAGS_OLD  := $(shell cat $(BUILD_FLAGS_FILE) 2>/dev/null)
 ifneq ($(BUILD_FLAGS_OLD),$(BUILD_FLAGS))
@@ -89,6 +117,14 @@ else
   PKGS    := sdl3 $(TTF_PKG) fontconfig
   CFLAGS  += $(shell $(PKGCONF) --cflags $(PKGS))
   LDLIBS  += $(shell $(PKGCONF) --libs $(PKGS))
+endif
+
+ifeq ($(HAVE_LIBALPM),1)
+  CFLAGS += -DHAVE_LIBALPM=1 $(shell $(PKGCONF) --cflags libalpm)
+  LDLIBS += $(shell $(PKGCONF) --libs libalpm)
+endif
+ifeq ($(HAVE_HOMEBREW),1)
+  CFLAGS += -DHAVE_HOMEBREW=1
 endif
 
 # compile_commands.json 片段：clang -MJ 每次编译写一条，最后合并

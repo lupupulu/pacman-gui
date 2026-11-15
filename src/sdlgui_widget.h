@@ -122,7 +122,8 @@ typedef struct {
 
 /* get_size 在 update 时返回 tabs 的总宽高；NULL 或返回 0 时沿用布局尺寸。
  * selector 必须由调用方创建；只有 selector->l.parent == NULL 时才把它挂到 tabs 下，
- * 否则保持它原来的父布局和位置。tabs 的内容区从 selector 下边缘开始。
+ * 否则保持它原来的父布局和位置。页面与 tabs 等大，selector 只是浮在页面
+ * 上方（会被标记为 draw_last）；需要避免遮挡时由页面/列表自己预留偏移量。
  * tabs 会保存 selector 原来的 callback/data，并覆盖为内部转发函数：
  * 先切换页面，再调用原 callback。删除 tabs 时，外部 selector 的 callback 会恢复。
  * widget_set_tabs 把页面挂到 tabs 内，只有当前页 enable/active=1；

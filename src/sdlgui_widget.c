@@ -1212,17 +1212,8 @@ static void tabs_update(void *p){
         tabs_resize_selector(tabs);
     }
 
-    float top=tabs->l.y;
-    if(tabs->selector!=NULL){
-        float selector_bottom=tabs->selector->l.l.y+tabs->selector->l.l.height;
-        if(selector_bottom>top){
-            top=selector_bottom;
-        }
-    }
-    float content_height=tabs->l.y+tabs->l.height-top;
-    if(content_height<0.0f){
-        content_height=0.0f;
-    }
+    /* 页面和 tabs 一样大：selector 不占用内容区，而是浮在页面之上。
+     * 内容需要避开 selector 时由页面/列表自己的偏移量处理。 */
     for(size_t i=0;i<tabs->page_count;i++){
         layout_t *page=tabs->pages!=NULL?tabs->pages[i]:NULL;
         if(page==NULL){
@@ -1230,9 +1221,9 @@ static void tabs_update(void *p){
         }
         page->align=make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f);
         page->x=tabs->l.x;
-        page->y=top;
+        page->y=tabs->l.y;
         page->width=tabs->l.width;
-        page->height=content_height;
+        page->height=tabs->l.height;
     }
 
 }
@@ -1434,6 +1425,9 @@ widget_tabs_t *widget_create_tabs(void *parent,align_t align,widget_size_func ge
     tabs->selector_data=selector!=NULL?selector->data:NULL;
     tabs->selector_attached=0;
     tabs->now_page=selector!=NULL?selector->now_button:0;
+
+    /* 页面铺满 tabs，selector 是浮在页面上的控件：绘制时延后到页面之后。 */
+    selector->l.l.draw_last=1;
 
     if(selector->l.l.parent==NULL){
         if(!layout_attach((layout_t*)selector,(layout_t*)tabs)){
