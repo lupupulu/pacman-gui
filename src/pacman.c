@@ -31,7 +31,12 @@ static void pkg_free_fields(package_t *pkg){
     free(pkg->name);
     free(pkg->version);
     free(pkg->description);
-    free(pkg->license);
+    if(pkg->licenses!=NULL){
+        for(char **i=pkg->licenses;*i!=NULL;i++){
+            free(*i);
+        }
+        free(pkg->licenses);
+    }
     free(pkg->submitter);
 }
 
@@ -242,12 +247,22 @@ int pacman_init_all(void){
         }
         if(backend->init==NULL||backend->init()){
             initialized++;
-            if(backend->list_installed!=NULL){
-                backend->list_installed();
-            }
         }
     }
     return initialized;
+}
+
+/* 枚举所有已注册后端的已安装包。这个函数会写入 pkg_installed，
+ * 调用期间 UI 不应并发读取包列表；常见用法是在后台线程列出，
+ * 完成后由主线程重建卡片。 */
+void pacman_list_installed_all(void){
+    register_default_backends();
+    for(size_t i=0;i<backend_count;i++){
+        pacman_t *backend=backends[i];
+        if(backend!=NULL&&backend->list_installed!=NULL){
+            backend->list_installed();
+        }
+    }
 }
 
 void pacman_quit_all(void){

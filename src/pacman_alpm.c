@@ -19,39 +19,57 @@ static char *alpm_strdup(const char *text){
     return copy;
 }
 
-static char *alpm_join_licenses(alpm_list_t *licenses){
+/* 把 alpm 的许可证链表复制成以 NULL 结尾的字符串数组。
+ * 没有许可证或分配失败时返回 NULL。 */
+static char **alpm_copy_licenses(alpm_list_t *licenses){
     if(licenses==NULL){
         return NULL;
     }
 
-    size_t length=1;
+    size_t count=0;
     for(alpm_list_t *i=licenses;i!=NULL;i=i->next){
-        if(i->data!=NULL){
-            length+=strlen((const char *)i->data)+2;
+        const char *text=(const char *)i->data;
+        if(text!=NULL&&text[0]!='\0'){
+            count++;
         }
     }
-
-    char *text=malloc(length);
-    if(text==NULL){
+    if(count==0){
         return NULL;
     }
-    text[0]='\0';
-    size_t offset=0;
+
+    char **result=calloc(count+1,sizeof(*result));
+    if(result==NULL){
+        return NULL;
+    }
+
+    size_t out=0;
     for(alpm_list_t *i=licenses;i!=NULL;i=i->next){
-        if(i->data==NULL){
+        const char *text=(const char *)i->data;
+        if(text==NULL||text[0]=='\0'){
             continue;
         }
-        if(offset>0){
-            text[offset++]=',';
-            text[offset++]=' ';
+        result[out]=alpm_strdup(text);
+        if(result[out]==NULL){
+            for(size_t j=0;j<out;j++){
+                free(result[j]);
+            }
+            free(result);
+            return NULL;
         }
-        const char *license=(const char *)i->data;
-        size_t license_length=strlen(license);
-        memcpy(text+offset,license,license_length);
-        offset+=license_length;
+        out++;
     }
-    text[offset]='\0';
-    return text;
+    result[out]=NULL;
+    return result;
+}
+
+static void alpm_free_licenses(char **licenses){
+    if(licenses==NULL){
+        return;
+    }
+    for(char **i=licenses;*i!=NULL;i++){
+        free(*i);
+    }
+    free(licenses);
 }
 
 int pacman_alpm_available(void){
@@ -74,8 +92,13 @@ static int alpm_open(void){
     return 1;
 }
 
-/* 读取一个 alpm 包并交给全局注册表，字段所有权同时转交 pkg_add()。 */
+/* 读取一个 alpm 包并交给全局注册表，字段所有权同时转交 pkg_add()。
+ * 只列出用户显式安装的包；作为依赖自动安装的包不进入 UI。 */
 static int alpm_append(alpm_pkg_t *source){
+    if(alpm_pkg_get_reason(source)!=ALPM_PKG_REASON_EXPLICIT){
+        return 1;
+    }
+
     package_t pkg;
     memset(&pkg,0,sizeof(pkg));
 
@@ -84,7 +107,7 @@ static int alpm_append(alpm_pkg_t *source){
     pkg.name=alpm_strdup(alpm_pkg_get_name(source));
     pkg.version=alpm_strdup(alpm_pkg_get_version(source));
     pkg.description=alpm_strdup(alpm_pkg_get_desc(source));
-    pkg.license=alpm_join_licenses(alpm_pkg_get_licenses(source));
+    pkg.licenses=alpm_copy_licenses(alpm_pkg_get_licenses(source));
     pkg.submitter=alpm_strdup(alpm_pkg_get_packager(source));
     pkg.stat=PKG_STAT_INSTALLED;
     pkg.progress=0.0;
@@ -96,7 +119,7 @@ static int alpm_append(alpm_pkg_t *source){
         free(pkg.name);
         free(pkg.version);
         free(pkg.description);
-        free(pkg.license);
+        alpm_free_licenses(pkg.licenses);
         free(pkg.submitter);
         return 0;
     }

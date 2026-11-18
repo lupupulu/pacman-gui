@@ -165,7 +165,7 @@ layout_rect_t *create_layout_package(package_t *package){
     const char *name=package->name!=NULL?package->name:"-";
     const char *version=package->version!=NULL?package->version:"-";
     const char *submitter=package->submitter;
-    const char *license=package->license;
+    char **licenses=package->licenses;
     char maintainer[256];
     maintainer[0]='\0';
     size_t maintainer_used=0;
@@ -211,10 +211,35 @@ layout_rect_t *create_layout_package(package_t *package){
         }
     }
 
-    int has_license=license!=NULL&&license[0]!='\0';
+    int has_license=0;
+    if(licenses!=NULL){
+        for(size_t i=0;licenses[i]!=NULL;i++){
+            if(licenses[i][0]!='\0'){
+                has_license=1;
+                break;
+            }
+        }
+    }
     if(has_license){
-        char license_text[256];
-        snprintf(license_text,sizeof(license_text),"License: %s",license);
+        char license_text[512];
+        size_t used=(size_t)snprintf(license_text,sizeof(license_text),"License: ");
+        if(used>=sizeof(license_text)){
+            used=sizeof(license_text)-1;
+        }
+        int first=1;
+        for(size_t i=0;licenses[i]!=NULL;i++){
+            const char *item=licenses[i];
+            if(item==NULL||item[0]=='\0'){
+                continue;
+            }
+            int written=snprintf(license_text+used,sizeof(license_text)-used,
+                "%s%s",first?"":", ",item);
+            if(written<0||(size_t)written>=sizeof(license_text)-used){
+                break;
+            }
+            used+=(size_t)written;
+            first=0;
+        }
         card->license=package_label((layout_t *)card,context,license_text,
             get_text_color(TEXT_CONTEXT));
     }

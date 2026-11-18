@@ -19,7 +19,7 @@ typedef struct {
 
     char *description;
     draft_texture_t *icon; // 封面图，如果有的话
-    char *license;
+    char **licenses; // 以 NULL 结尾的许可证列表
 
     char *submitter;
     char **maintainers;
@@ -50,7 +50,8 @@ typedef struct {
     int (*update_all)(void); // 更新所有包（对应pacman -Syu）
     void (*quit)(void);
 
-    /* 枚举所有已安装包并通过 pkg_add() 加入全局 pkg_installed。 */
+    /* 枚举需要显示的已安装包并通过 pkg_add() 加入全局 pkg_installed。
+     * 例如 alpm 只列出显式安装的包，自动依赖会被过滤掉。 */
     void (*list_installed)(void);
 
     int (*install_package)(package_t *pkg);
@@ -61,7 +62,11 @@ typedef struct {
 void pacman_register(pacman_t *m);
 
 /* 后端列表：pacman.c 统一管理，init/main 不直接引用具体后端。 */
+/* 只初始化各后端，不枚举已安装包；枚举见 pacman_list_installed_all()。 */
 int pacman_init_all(void);
+/* 枚举所有后端的已安装包并写入 pkg_installed。会修改全局包列表，
+ * 调用期间 UI 不能并发读取；适合放到后台线程，完成后通知主线程刷新。 */
+void pacman_list_installed_all(void);
 void pacman_quit_all(void);
 size_t pacman_backend_count(void);
 pacman_t *pacman_backend_at(size_t index);
@@ -73,9 +78,8 @@ pacman_t *pacman_backend_find(char *name);
 size_t pacman_package_count(void);
 package_t *pacman_package_at(size_t index);
 
-void pkg_stat_update(package_t *pkg);
 
-/* pkg_add 接管 pkg->name/version/description/license/submitter 的所有权；
+/* pkg_add 接管 pkg->name/version/description/licenses/submitter 的所有权；
  * from/meta_data 视为后端借用的常量字符串。重复或插入失败时释放这些字段。 */
 void pkg_add(package_t *pkg);
 

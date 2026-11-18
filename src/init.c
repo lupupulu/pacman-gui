@@ -6,20 +6,10 @@
 #include "pacman.h"
 #include "init.h"
 
-/* 通过 pacman.c 的统一包视图生成 installed 列表。 */
-static layout_list_t *create_package_list(layout_t *parent){
-    layout_list_t *list=create_layout_list(
-        parent,
-        0.0f,
-        0.0f,
-        make_align(3,3,1,1,0.0f,0.0f,1.0f,1.0f),
-        0,
-        NULL
-    );
-    if(list==NULL){
-        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("Failed to create package list"));
-        return NULL;
-    }
+/* 按当前 pkg_installed 内容生成卡片；初始化时列表为空，后台枚举完成后
+ * 由 init_ui_begin_refresh_packages()/init_ui_refresh_packages_batch()
+ * 分批补齐。 */
+static void package_list_fill(layout_list_t *list){
     size_t count=pacman_package_count();
     for(size_t i=0;i<count;i++){
         package_t *package=pacman_package_at(i);
@@ -34,6 +24,23 @@ static layout_list_t *create_package_list(layout_t *parent){
             SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("Failed to create package card %zu"),i);
         }
     }
+}
+
+/* 通过 pacman.c 的统一包视图生成 installed 列表。 */
+static layout_list_t *create_package_list(layout_t *parent){
+    layout_list_t *list=create_layout_list(
+        parent,
+        0.0f,
+        0.0f,
+        make_align(3,3,1,1,0.0f,0.0f,1.0f,1.0f),
+        0,
+        NULL
+    );
+    if(list==NULL){
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("Failed to create package list"));
+        return NULL;
+    }
+    package_list_fill(list);
     return list;
 }
 
@@ -42,6 +49,9 @@ typedef struct {
     layout_list_t *list;
     widget_slider_t *slider;
 }installed_page_t;
+
+/* 供异步加载完成后的刷新函数使用；UI 销毁前清空。 */
+static installed_page_t *installed_page_view=NULL;
 
 static void installed_page_draw(void *p){
     installed_page_t *page=p;
@@ -113,7 +123,61 @@ static void main_tabs_size(float *w,float *h){
     *h=get_root_h();
 }
 
+/* 增量刷新的游标；begin 时记录一次总包数，batch 只往后追加卡片。 */
+static size_t package_refresh_index=0;
+static size_t package_refresh_total=0;
+
+int init_ui_begin_refresh_packages(void){
+    installed_page_t *page=installed_page_view;
+    if(page==NULL||page->list==NULL){
+        return 0;
+    }
+
+    /* 调用方负责保证此时没有后台线程再写 pkg_installed（例如先 join）。 */
+    list_clear(page->list);
+    package_refresh_index=0;
+    package_refresh_total=pacman_package_count();
+    return 1;
+}
+
+int init_ui_refresh_packages_batch(size_t max_items){
+    installed_page_t *page=installed_page_view;
+    if(page==NULL||page->list==NULL){
+        return 0;
+    }
+    if(max_items==0){
+        max_items=1;
+    }
+
+    size_t added=0;
+    while(package_refresh_index<package_refresh_total&&added<max_items){
+        size_t index=package_refresh_index++;
+        package_t *package=pacman_package_at(index);
+        if(package==NULL){
+            continue;
+        }
+        layout_rect_t *card=create_layout_package(package);
+        if(card==NULL||!list_add(page->list,(layout_t *)card)){
+            if(card!=NULL){
+                delete_layout((layout_t *)card);
+            }
+            SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("Failed to create package card %zu"),index);
+        }
+        added++;
+    }
+
+    /* 保持用户当前滚动位置，只更新内容总高度。 */
+    if(page->slider!=NULL){
+        float slide=list_get_slide(page->list);
+        page->slider->all_height=list_get_content_height(page->list);
+        widget_slider_set(page->slider,slide);
+    }
+
+    return package_refresh_index<package_refresh_total?1:0;
+}
+
 void init_ui_quit(void){
+    installed_page_view=NULL;
     pacman_quit_all();
 }
 
@@ -149,8 +213,10 @@ int init_ui(void){
     if(tabs==NULL||selector==NULL||
         package_page==NULL||installed_page==NULL||settings_page==NULL){
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,_("Failed to create main tabs"));
+        installed_page_view=NULL;
         return 0;
     }
+    installed_page_view=installed_page;
 
     /* installed 列表前后各留出 selector 的高度：第一个 item 从 selector
      * 下缘开始，滚动时可以从 selector 底下经过；末尾留出同样的空间。 */

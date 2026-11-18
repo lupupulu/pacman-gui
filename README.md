@@ -456,6 +456,40 @@ float content_height=list_get_content_height(list);
   - `COLOR_SLIDER`：普通
   - `COLOR_SLIDER_HIGHLIGHT`：拖动时
 
+## 可滚动 Tab 布局
+
+`create_layout_tab()` 创建一个整页内容可以上下滚动的页面布局（`layout_tab_t`）。
+它和 `layout_list_t` 的区别是：list 负责一维排列子项；tab 的子布局是普通布局，
+按 align 相对**整页内容**（宽度等于页面宽度，高度等于整页高度）定位，适合设置页、
+详情页这类带任意子控件的可滚动页面。
+
+```c
+layout_tab_t *page = create_layout_tab(
+    parent,
+    0.0f,
+    0.0f,
+    make_align(3,3,1,1,0.0f,0.0f,1.0f,1.0f),
+    1200.0f,          // 整页高度；<=0 表示按子布局自动计算
+    header,           // 子布局的 align 相对整页计算
+    form,
+    footer,
+    NULL
+);
+page->front_offset = 24.0f;
+page->back_offset = 24.0f;
+```
+
+- `l` 是可视区域；`to_draw` 是整页内容布局，子布局挂在 `to_draw` 下。
+- `content_height` 固定整页高度；传 0/负数时自动取
+  `max(视口高度, 子布局下边界)`。
+- `align` 为 0 的子布局按整页相对坐标处理，会随内容一起滚动。
+- `tab_add()` 追加子布局；`tab_slide()` / `tab_set_slide()` / `tab_get_slide()`
+  负责滚动；`tab_get_content_height()` 返回含前后留白的总长度，可直接交给 slider。
+- 视口裁剪由 `l` 负责；完全在视口外的子布局不参与鼠标命中，滚轮优先由
+  子布局消费，没人消费时 tab 自己滚动。
+- 自动高度适合按 y 堆叠的固定高度子布局；如果子布局的 height / vertical align
+  依赖整页高度，请使用固定 `content_height`，避免高度和子布局互相影响。
+
 ## Label 布局
 
 `create_layout_label()` 在 `sdlgui.c` 里提供了一个简单的文字标签布局：
@@ -491,7 +525,7 @@ layout_label_t *label = create_layout_label(
   - 未安装：`\\install install`
   - 已安装：上方 `\\update update`，下方 `\\delete delete`
 - maintainer 和 submitter 都为空时，整行人员信息不创建、不显示
-- license 为空时不创建许可证行
+- `licenses` 为空时不创建许可证行
 - 按钮回调暂未接逻辑，只用于绘制测试
 
 `init.c` 里创建 tabs 和页面布局，`main.c` 只负责初始化和事件循环：
@@ -503,7 +537,9 @@ installed 页是一个容器，里面放 `layout_list_t` 和右侧 `widget_slide
 滑块通过 `list_get_content_height()` 获取内容总长度，并在页面更新时同步
 `list_get_slide()`。卡片宽度由所在的 `layout_list_t` 决定，内部标签和按钮会在
 `package_update()` 中按卡片宽度重新定位。后端没有提供 maintainer/submitter 时，
-人员信息行会被省略。
+人员信息行会被省略。UI 初始化时列表为空，后台枚举线程结束后由主循环
+分批创建卡片：`init_ui_begin_refresh_packages()` 记录包总数，
+`init_ui_refresh_packages_batch(32)` 每帧追加一批，因此建卡期间界面仍可交互。
 
 页面与 tabs 一样大，selector 浮在页面之上。`widget_create_tabs()` 会把传入的
 selector 标记为 `draw_last`，保证它晚于页面绘制。`installed_page` 把列表的
@@ -535,7 +571,7 @@ for(size_t i=0;i<count;i++){
   后端的 `list_installed()` 重建。
 - `pkg_del()` 按这四项精确匹配并删除；找不到时同样触发对应管理器的重建。
 - `pkg_del_from()` 删除 `from` 等于给定管理器名的所有包。
-- `pkg_add()` 接管 `name/version/description/license/submitter` 的所有权；
+- `pkg_add()` 接管 `name/version/description/licenses/submitter` 的所有权；
   `from/meta_data` 是后端借用的常量字符串，注册表不释放它们。
 
 `pacman_backend_find("alpm")` 按 `pacman_t.name` 查找已注册后端。
@@ -556,6 +592,8 @@ for(size_t i=0;i<count;i++){
 - `init()` 用 `alpm_initialize("/","/var/lib/pacman/",&err)` 打开数据库；
 - `list_installed()` 通过 `alpm_get_localdb()` / `alpm_db_get_pkgcache()`
   遍历已安装包，并用 `pkg_add()` 加入全局数组；
+- 只保留 `alpm_pkg_get_reason()` 为 `ALPM_PKG_REASON_EXPLICIT` 的包，
+  作为依赖自动安装的包不显示；
 - 填入名称、版本、描述、许可证、packager、安装大小；
 - `stat = PKG_STAT_INSTALLED`，`from = "alpm"`。
 
@@ -581,14 +619,19 @@ Makefile 在构建时检查 `PATH`、`HOMEBREW_PREFIX`、`/opt/homebrew`、
   `brew list --versions --cask`，再通过 `pkg_add()` 加入全局数组；
 - 每个包创建一条 `package_t`，`stat` 统一设为 `PKG_STAT_INSTALLED`，
   `from = "homebrew"`，`meta_data` 标记 `formula` 或 `cask`；
-- Homebrew CLI 文本没有 license、maintainer、submitter、描述等字段，这些内容
+- Homebrew CLI 文本没有 licenses、maintainer、submitter、描述等字段，这些内容
   使用卡片的空值回退。
 
-`pacman_init_all()` 会初始化所有已注册后端，并在 `init()` 成功后调用各自的
-`list_installed()` 填充全局数组。`main()` 在 `sdlgui_init()` 之前调用它，
-所以 SDL/窗口初始化时包列表已经就绪；`init_ui()` 只通过
-`pacman_package_count()/pacman_package_at()` 生成 installed 列表，
-`init_ui_quit()` 调用 `pacman_quit_all()` 释放后端并清空数组。
+`pacman_init_all()` 只初始化各后端，不再枚举软件包。`main()` 在
+`sdlgui_init()` 之前调用它；`init_ui()` 完成后，主线程创建一个 pthread 执行
+`pacman_list_installed_all()`，该线程通过各后端的 `list_installed()` /
+`pkg_add()` 填充全局数组。主循环用 `SDL_AtomicInt` 轮询完成标志，
+`pthread_join` 之后调用 `init_ui_begin_refresh_packages()`；之后每帧调用
+`init_ui_refresh_packages_batch(32)` 追加一批卡片，建卡期间仍回到事件循环，
+因此窗口可以先显示，枚举和建卡都不会长时间阻塞交互。
+
+枚举期间 UI 不读取 `pkg_installed`；退出时主线程也会先 join 枚举线程，
+再调用 `pacman_quit_all()` 释放后端和包数据。
 
 ## Tabs 控件
 

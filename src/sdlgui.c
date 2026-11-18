@@ -3073,6 +3073,317 @@ void list_mouse(void *p){
     }
 }
 
+/* ---- tab layout：整页内容可上下滚动 ---- */
+
+#define TAB_WHEEL_STEP LIST_WHEEL_STEP
+
+static float tab_max_slide(const layout_tab_t *tab){
+    if(tab==NULL){
+        return 0.0f;
+    }
+    float total=tab->front_offset+tab->to_draw.height+tab->back_offset;
+    float max=total-tab->l.height;
+    return max>0.0f?max:0.0f;
+}
+
+/* 把整页内容放到当前滚动位置，并按 align 更新它的子布局。
+ * 子布局的 parent 是 to_draw，所以宽度按页面、竖向按整页内容计算。 */
+static void tab_position_children(layout_tab_t *tab){
+    layout_t *content=&tab->to_draw;
+    float old_x=content->x;
+    float old_y=content->y;
+    content->x=tab->l.x;
+    content->y=tab->l.y+tab->front_offset-tab->now;
+    content->width=tab->l.width;
+
+    /* align 0 的子布局使用自定义坐标，layout_update() 不会跟随父布局；
+     * 对这类坐标补上整页内容的位移，让它们和滚动内容一起移动。 */
+    float dx=content->x-old_x;
+    float dy=content->y-old_y;
+
+    for(size_t i=0;i<content->son_size;i++){
+        layout_t *item=content->sons[i];
+        if(item==NULL||!item->enable){
+            continue;
+        }
+        /* 先补偿 align 0 的自定义坐标，再让子布局自己 update，
+         * 这样它内部的子控件也会按新位置重新计算。 */
+        if(item->align.horizon==0){
+            item->x+=dx;
+        }
+        if(item->align.vertical==0){
+            item->y+=dy;
+        }
+        if(item->update!=NULL){
+            item->update(item);
+        }else{
+            layout_update(item);
+        }
+        update_sons(item);
+    }
+}
+
+/* 自动高度：子布局在整页坐标系里的最大下边界。 */
+static float tab_content_bottom(layout_tab_t *tab){
+    float bottom=0.0f;
+    layout_t *content=&tab->to_draw;
+    for(size_t i=0;i<content->son_size;i++){
+        layout_t *item=content->sons[i];
+        if(item==NULL||!item->enable){
+            continue;
+        }
+        float item_bottom=item->y+item->height-content->y;
+        if(item_bottom>bottom){
+            bottom=item_bottom;
+        }
+    }
+    return bottom;
+}
+
+void tab_update(void *p){
+    layout_tab_t *tab=p;
+    if(tab==NULL){
+        return;
+    }
+
+    layout_update(&tab->l);
+
+    layout_t *content=&tab->to_draw;
+    content->width=tab->l.width;
+    if(tab->auto_height){
+        content->height=tab->l.height;
+    }
+    if(content->height<1.0f){
+        content->height=1.0f;
+    }
+
+    tab_position_children(tab);
+
+    if(tab->auto_height){
+        float wanted=tab_content_bottom(tab);
+        if(wanted<tab->l.height){
+            wanted=tab->l.height;
+        }
+        if(wanted<1.0f){
+            wanted=1.0f;
+        }
+        if(SDL_fabsf(wanted-content->height)>0.5f){
+            content->height=wanted;
+            tab_position_children(tab);
+
+            float again=tab_content_bottom(tab);
+            if(again<tab->l.height){
+                again=tab->l.height;
+            }
+            if(again<1.0f){
+                again=1.0f;
+            }
+            if(SDL_fabsf(again-content->height)>0.5f){
+                content->height=again;
+                tab_position_children(tab);
+            }
+        }
+    }
+
+    float max=tab_max_slide(tab);
+    tab->can_be_slided=max>0.01f?1u:0u;
+    if(!tab->can_be_slided){
+        tab->now=0.0f;
+    }else if(tab->now<0.0f){
+        tab->now=0.0f;
+    }else if(tab->now>max){
+        tab->now=max;
+    }
+
+    /* now 变化后重新把内容放到最终位置。 */
+    tab_position_children(tab);
+}
+
+void tab_draw(void *p){
+    layout_tab_t *tab=p;
+    if(tab==NULL){
+        return;
+    }
+    tab_update(tab);
+    draw_layout(&tab->to_draw);
+}
+
+void tab_clear(void *p){
+    layout_tab_t *tab=p;
+    if(tab==NULL){
+        return;
+    }
+
+    layout_t *content=&tab->to_draw;
+    for(size_t i=0;i<content->son_size;i++){
+        delete_layout(content->sons[i]);
+    }
+    free(content->sons);
+    content->sons=NULL;
+    content->son_size=0;
+
+    tab->now=0.0f;
+    tab->can_be_slided=0;
+}
+
+int tab_add(layout_tab_t *tab,layout_t *item){
+    if(tab==NULL||item==NULL){
+        return 0;
+    }
+    return layout_attach(item,(layout_t *)&tab->to_draw)?1:0;
+}
+
+static int tab_mouse_inside(const layout_tab_t *tab){
+    float x=get_mouse_x();
+    float y=get_mouse_y();
+    return x>=tab->l.x&&x<=tab->l.x+tab->l.width
+        &&y>=tab->l.y&&y<=tab->l.y+tab->l.height;
+}
+
+static void tab_handle_wheel(layout_tab_t *tab){
+    if(!tab_mouse_inside(tab)||!tab->can_be_slided){
+        return;
+    }
+    float delta=-get_mouse_wheel_y();
+    if(delta==0.0f){
+        return;
+    }
+    tab_set_slide(tab,tab->now+delta*TAB_WHEEL_STEP);
+    mouse_wheel[0]=0.0f;
+    mouse_wheel[1]=0.0f;
+}
+
+void tab_mouse(void *p){
+    layout_tab_t *tab=p;
+    if(tab==NULL){
+        return;
+    }
+
+    layout_update_ancestors((sublayout_t *)&tab->l);
+    tab_update(tab);
+
+    int inside=tab_mouse_inside(tab);
+    layout_t *content=&tab->to_draw;
+    for(size_t i=0;i<content->son_size;i++){
+        layout_t *item=content->sons[i];
+        if(item==NULL||!item->enable){
+            continue;
+        }
+        /* 完全在视口外的子布局不参与鼠标命中/悬停。 */
+        if(item->y+item->height<=tab->l.y||item->y>=tab->l.y+tab->l.height){
+            continue;
+        }
+        layout_mouse_dispatch(item);
+    }
+
+    /* 子布局先处理滚轮；没人消费时再由 tab 自己滚动。 */
+    if(inside&&tab->can_be_slided){
+        tab_handle_wheel(tab);
+    }
+}
+
+void tab_set_slide(layout_tab_t *tab,float offset){
+    if(tab==NULL||!tab->can_be_slided){
+        return;
+    }
+    float max=tab_max_slide(tab);
+    if(offset<0.0f){
+        offset=0.0f;
+    }else if(offset>max){
+        offset=max;
+    }
+    tab->now=offset;
+}
+
+void tab_slide(layout_tab_t *tab,float off){
+    if(tab==NULL||!tab->can_be_slided||off==0.0f){
+        return;
+    }
+    tab_set_slide(tab,tab->now+off);
+}
+
+float tab_get_slide(const layout_tab_t *tab){
+    if(tab==NULL||!tab->can_be_slided){
+        return 0.0f;
+    }
+    return tab->now;
+}
+
+float tab_get_content_height(const layout_tab_t *tab){
+    if(tab==NULL){
+        return 0.0f;
+    }
+    return tab->front_offset+tab->to_draw.height+tab->back_offset;
+}
+
+void tab_set_content_height(layout_tab_t *tab,float height){
+    if(tab==NULL){
+        return;
+    }
+    if(height>0.0f){
+        tab->auto_height=0;
+        tab->to_draw.height=height;
+    }else{
+        tab->auto_height=1;
+    }
+}
+
+layout_tab_t *create_layout_tab(void *parent,float w,float h,align_t align,float content_height,...){
+    if(w<=0.0f||h<=0.0f){
+        return NULL;
+    }
+
+    layout_t *parent_layout=parent!=NULL?(layout_t *)parent:&root;
+    layout_tab_t *tab=(layout_tab_t *)create_layout(
+        sizeof(*tab),
+        parent_layout,
+        w,
+        h,
+        tab_draw,
+        tab_update,
+        tab_clear,
+        tab_mouse,
+        align
+    );
+    if(tab==NULL){
+        return NULL;
+    }
+
+    /* 整页内容布局：不走 layout_t.sons，由 tab 自己 update/draw/mouse。 */
+    layout_t *content=&tab->to_draw;
+    memset(content,0,sizeof(*content));
+    content->enable=1;
+    content->active=1;
+    content->son_resizable=1;
+    content->need_free=0;
+    content->align=make_align_free();
+    content->parent=(sublayout_t *)&tab->l;
+    content->x=tab->l.x;
+    content->y=tab->l.y;
+    content->width=w;
+    content->height=content_height>0.0f?content_height:h;
+
+    tab->now=0.0f;
+    tab->front_offset=0.0f;
+    tab->back_offset=0.0f;
+    tab->auto_height=content_height>0.0f?0u:1u;
+    tab->can_be_slided=0;
+
+    va_list arg;
+    va_start(arg,content_height);
+    layout_t *child=NULL;
+    while((child=va_arg(arg,layout_t *))!=NULL){
+        if(!tab_add(tab,child)){
+            va_end(arg);
+            delete_layout((layout_t *)tab);
+            return NULL;
+        }
+    }
+    va_end(arg);
+
+    return tab;
+}
+
 /* ---- input layout：鼠标形状/焦点/键盘编辑，文字 draft 只绘制文字 ---- */
 
 static int draft_text_build_cache(draft_text_t *d);
@@ -3668,22 +3979,34 @@ void sdlgui_render_frame(void){
     }
     rendering=1;
 
+    /* 先同步窗口尺寸和逻辑呈现，再清屏/绘制。缩放窗口时如果先清屏、
+     * 后更新逻辑尺寸，这一帧会按旧尺寸绘制，下一帧才恢复，看起来像
+     * 旧画面留下的虚影。 */
+    update_root();
+
     unsigned background=get_color(COLOR_MAIN);
     SDL_SetRenderDrawColor(renderer,
         (background>>24)&0xFF,(background>>16)&0xFF,
         (background>>8)&0xFF,background&0xFF);
     SDL_RenderClear(renderer);
 
-    update_root();
     draw_root();
 
     SDL_RenderPresent(renderer);
     rendering=0;
 }
 
+/* live resize 时主循环要等事件处理完才渲染，窗口尺寸变化到下一帧之间
+ * 合成器会把旧 buffer 拉伸到新尺寸，表现为拖影/虚影。这里在尺寸事件
+ * 到达时立刻重绘，EXPOSED 仍然保留（macOS 拖动边缘时主要靠它）。 */
 static bool SDLCALL sdlgui_live_resize_watch(void *userdata,SDL_Event *event){
     (void)userdata;
-    if(event->type!=SDL_EVENT_WINDOW_EXPOSED){
+    switch(event->type){
+    case SDL_EVENT_WINDOW_EXPOSED:
+    case SDL_EVENT_WINDOW_RESIZED:
+    case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+        break;
+    default:
         return true;
     }
 

@@ -99,6 +99,7 @@ typedef struct {
         .horizon=hor_,.vertical=ver_,.width=w_,.height=h_, \
         .horizon_offset=hor_off,.vertical_offset=ver_off,.width_offset=w_off,.height_offset=h_off  \
     })
+#define make_align_free() make_align(0,0,0,0,0,0,0,0)
 
 typedef void(*update_func)(void *l);
 typedef void(*draw_func)(void *l);
@@ -239,21 +240,6 @@ void draft_draw_text(void *l);
 void draft_text_clear(void *l);   // 释放 can_change=0 的缓存纹理
 
 typedef struct {
-    layout_t l;
-    draft_text_t *text;   // 内部文字 draft，由 label 释放
-    char *context;        // label 自己复制的一份文字
-    align_t text_align;   // 文字在 label 内的对齐
-}layout_label_t;
-
-/* 在 label 内显示一段会按 w 换行、按 h 裁剪的文字。
- * text_align 只使用 horizon/vertical 与两个 offset：
- *   horizon: 0=左 1=右 3=居中；vertical: 0=上 1=下 3=居中。
- * context 会被复制；字体和颜色沿用 draft_create_text() 的语义。 */
-void label_draw(void *l);
-layout_label_t *create_layout_label(void *parent,float w,float h,align_t align,
-    align_t text_align,TTF_Font *font,const char *context,unsigned color);
-
-typedef struct {
     draw_func draw;
     clear_func clear;
     SUBLAYOUT_DEF
@@ -300,6 +286,20 @@ void animation_draw(void *l);
 void animation_clear(void *l);
 
 
+typedef struct {
+    layout_t l;
+    draft_text_t *text;   // 内部文字 draft，由 label 释放
+    char *context;        // label 自己复制的一份文字
+    align_t text_align;   // 文字在 label 内的对齐
+}layout_label_t;
+
+/* 在 label 内显示一段会按 w 换行、按 h 裁剪的文字。
+ * text_align 只使用 horizon/vertical 与两个 offset：
+ *   horizon: 0=左 1=右 3=居中；vertical: 0=上 1=下 3=居中。
+ * context 会被复制；字体和颜色沿用 draft_create_text() 的语义。 */
+void label_draw(void *l);
+layout_label_t *create_layout_label(void *parent,float w,float h,align_t align,
+    align_t text_align,TTF_Font *font,const char *context,unsigned color);
 
 
 
@@ -425,6 +425,50 @@ float list_get_slide(const layout_list_t *l);
 /* 内容在滚动方向上的总长度；没有子布局时返回 0。 */
 float list_get_content_height(const layout_list_t *l);
 void list_set_slide(layout_list_t *l,float offset);
+
+
+
+/* 可上下滚动的页面容器：
+ * - l 是可视区域（tab 页本身）；
+ * - to_draw 是“整页内容”布局，宽度等于页面宽度，高度是整页高度；
+ *   子布局挂在 to_draw 下，所以 align 是相对整页计算的，不受当前滚动位置影响；
+ * - now 是当前滚动偏移，front_offset/back_offset 是内容前后留白。
+ * 子布局的 y 会随 to_draw.y 一起移动，绘制和鼠标命中都被 l 的视口裁剪。 */
+typedef struct {
+    layout_t l;
+
+    layout_t to_draw;
+
+    float now;
+    float front_offset;
+    float back_offset;
+
+    unsigned auto_height:1;  // 1: 按子布局下边界自动计算整页高度
+    unsigned can_be_slided:1;
+}layout_tab_t;
+
+/* content_height>0 时固定整页高度；<=0 时按子布局自动计算（至少为视口高度）。
+ * 变参是若干 layout_t*，以 NULL 结尾；子布局归 tab 所有。 */
+layout_tab_t *create_layout_tab(void *parent,float w,float h,align_t align,float content_height,...);
+
+/* 追加一个页面子布局；它的 align 相对整页（to_draw）计算。成功后归 tab 所有。 */
+int tab_add(layout_tab_t *tab,layout_t *item);
+
+void tab_draw(void *l);
+void tab_update(void *l);
+void tab_clear(void *l);
+void tab_mouse(void *l);
+
+/* 按逻辑像素滚动：off>0 向内容末尾（下）移动。 */
+void tab_slide(layout_tab_t *tab,float off);
+float tab_get_slide(const layout_tab_t *tab);
+/* 整页总长度（含 front/back 留白），可直接交给滑块。 */
+float tab_get_content_height(const layout_tab_t *tab);
+void tab_set_slide(layout_tab_t *tab,float offset);
+/* height>0 固定整页高度；height<=0 恢复自动高度。 */
+void tab_set_content_height(layout_tab_t *tab,float height);
+
+
 
 
 /* 输入框布局处理鼠标形状、焦点、键盘输入和文字 draft；

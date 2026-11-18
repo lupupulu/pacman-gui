@@ -117,6 +117,9 @@ else
   PKGS    := sdl3 $(TTF_PKG) fontconfig
   CFLAGS  += $(shell $(PKGCONF) --cflags $(PKGS))
   LDLIBS  += $(shell $(PKGCONF) --libs $(PKGS))
+  # 背景加载线程需要 pthread；macOS 的 pthread 在 libSystem 里，不需要这个标志
+  CFLAGS  += -pthread
+  LDLIBS  += -pthread
 endif
 
 ifeq ($(HAVE_LIBALPM),1)
