@@ -14,17 +14,17 @@
 
 /* theme_t 里的 color/text 是 unsigned *，内建主题需要各自准备静态后备数组。 */
 static unsigned builtin_bright_color[]={
-    0xEFF1F5FF,0xCCD0DAFF,0x8CAAEEFF,0xFE640BFF,0xABC4FFFF,
-    0xACB0BEFF,0x8CAAEEFF,0xCCD0DAFF,0x8CAAEEFF
+    0xF7F8FCFF,0xE9EDF5FF,0xE0E7FFFF,0xA5B4FCFF,0xC7D2FEFF,
+    0xD8DFEAFF,0x818CF8FF,0xC3CCDAFF,0x818CF8FF
 };
-static unsigned builtin_bright_text_color[]={0x4C4F69FF};
+static unsigned builtin_bright_text_color[]={0x172033FF,0x334155FF,0x3B4763FF};
 static unsigned builtin_dark_color[]={
-    0x1E1E2EFF,0x313244FF,0x1E66F5FF,0xFAB387FF,0x89B4FAFF,
-    0x585B70FF,0x1E66F5FF,0x45475AFF,0x89B4FAFF
+    0x111522FF,0x1B2233FF,0x3730A3FF,0x4F46E5FF,0x4338CAFF,
+    0x303A4EFF,0x4F46E5FF,0x3B465CFF,0x818CF8FF
 };
-static unsigned builtin_dark_text_color[]={0xCDD6F4FF};
+static unsigned builtin_dark_text_color[]={0xF8FAFCFF,0xE2E8F0FF,0xD5DEEDFF};
 static unsigned builtin_text_size[]={20,16,14};
-static char *builtin_font_names[]={NULL};   /* NULL 表示使用内嵌字体 */
+static char *builtin_font_names[]={"sans-serif","sans-serif","monospace"};
 
 /* 默认嵌入字体：由 tools/ttf_to_c.py 生成到 build/pacman_pixel_font.c。 */
 extern const unsigned char pacman_pixel_ttf[];
@@ -36,16 +36,16 @@ static theme_slice_t builtin_theme_slice[]={
         .color=builtin_bright_color,
         .color_size=9,
         .text_color=builtin_bright_text_color,
-        .text_color_size=1,
-        .divider_color=0xBCC0CCFF
+        .text_color_size=3,
+        .divider_color=0xD3DAE6FF
     },
     {
         .name="Dark",
         .color=builtin_dark_color,
         .color_size=9,
         .text_color=builtin_dark_text_color,
-        .text_color_size=1,
-        .divider_color=0x45475AFF
+        .text_color_size=3,
+        .divider_color=0x2B3548FF
     }
 };
 
@@ -55,22 +55,22 @@ static theme_t theme={
     .now_slice=&builtin_theme_slice[0],
 
     .fonts=builtin_font_names,
-    .font_size=1,
+    .font_size=3,
 
     .text=builtin_text_size,
     .text_size=3,
 
-    .item_height=32.0f,
-    .button_animation_time=200,
-    .switch_animation_time=120,
-    .button_height=32.0f,
-    .switch_width=64.0f,
+    .item_height=40.0f,
+    .button_animation_time=140,
+    .switch_animation_time=160,
+    .button_height=30.0f,
+    .switch_width=48.0f,
     .switch_icon_height=0.0f,
-    .selector_item_width=72.0f,
-    .rect_round_corner=10.0f,
+    .selector_item_width=96.0f,
+    .rect_round_corner=12.0f,
     .slider_animation_time=200,
-    .slider_width=8.0f,
-    .slider_least_height=24.0f,
+    .slider_width=6.0f,
+    .slider_least_height=28.0f,
 
     .slices=builtin_theme_slice,
     .slice_size=2
@@ -249,20 +249,20 @@ static void theme_reset_builtin(void){
     theme.version="0.0.1";
     theme.now_slice=&builtin_theme_slice[0];
     theme.fonts=builtin_font_names;
-    theme.font_size=1;
+    theme.font_size=3;
     theme.text=builtin_text_size;
     theme.text_size=3;
-    theme.item_height=32.0f;
-    theme.button_animation_time=200;
-    theme.switch_animation_time=120;
-    theme.button_height=32.0f;
-    theme.switch_width=64.0f;
+    theme.item_height=40.0f;
+    theme.button_animation_time=140;
+    theme.switch_animation_time=160;
+    theme.button_height=30.0f;
+    theme.switch_width=48.0f;
     theme.switch_icon_height=0.0f;
-    theme.selector_item_width=72.0f;
-    theme.rect_round_corner=10.0f;
+    theme.selector_item_width=96.0f;
+    theme.rect_round_corner=12.0f;
     theme.slider_animation_time=200;
-    theme.slider_width=8.0f;
-    theme.slider_least_height=24.0f;
+    theme.slider_width=6.0f;
+    theme.slider_least_height=28.0f;
     theme.slices=builtin_theme_slice;
     theme.slice_size=2;
     theme.icon_path=NULL;
@@ -491,17 +491,17 @@ void theme_set(const char *path,const char *file){
     /* 新配置先完整读到 tmp，任何一项不合格都不碰正在使用的 theme/theme_toml。
        tmp.fonts 先保持 NULL，等 fonts 解析阶段再分配，避免失败时误释放当前主题的数组。 */
     theme_t tmp={0};
-    tmp.item_height=32.0f;
-    tmp.button_animation_time=200;
-    tmp.switch_animation_time=120;
-    tmp.button_height=32.0f;
-    tmp.switch_width=64.0f;
+    tmp.item_height=40.0f;
+    tmp.button_animation_time=140;
+    tmp.switch_animation_time=160;
+    tmp.button_height=30.0f;
+    tmp.switch_width=48.0f;
     tmp.switch_icon_height=0.0f;
-    tmp.selector_item_width=72.0f;
-    tmp.rect_round_corner=10.0f;
+    tmp.selector_item_width=96.0f;
+    tmp.rect_round_corner=12.0f;
     tmp.slider_animation_time=200;
-    tmp.slider_width=8.0f;
-    tmp.slider_least_height=24.0f;
+    tmp.slider_width=6.0f;
+    tmp.slider_least_height=28.0f;
 
     toml_type_t *tp=NULL;
 

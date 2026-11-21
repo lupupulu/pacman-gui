@@ -4,7 +4,7 @@
 #   version            配置格式版本，将来改结构时用来做兼容
 #   name / description 这份配置的名字和说明，给设置界面显示
 #   default            启动时用哪个主题（对应下面的 [表名]）
-#   fonts              字体族，按优先级排列（缺字形时依次回退）
+#   fonts              各级文字字体族（标题 / 副标题 / 正文），不足时沿用最后一项
 #   text_size          各级字号，单位 pt
 #   icon_path          图标目录；相对 config.toml 所在目录，不写时为 <配置目录>/icon
 #   item_height        列表项 / 按钮的高度，单位 px
@@ -28,31 +28,31 @@
 
 version = "0.0.1"
 name = "Default"
-description = "Default sdlgui theme."
+description = "Indigo and slate theme with comfortable typography."
 default = "Bright"
-fonts = [ "monospace" ]
-text_size = [ 16 , 14 , 12 ]
-item_height = 32.0
-button_height = 24.0
-button_animation_time = 100
-switch_animation_time = 120
-switch_width = 32.0
+fonts = [ "sans-serif" , "sans-serif" , "monospace" ]
+text_size = [ 20 , 16 , 14 ]
+item_height = 40.0
+button_height = 30.0
+button_animation_time = 140
+switch_animation_time = 160
+switch_width = 48.0
 switch_icon_height = 0.0
-selector_item_width = 72.0
+selector_item_width = 96.0
 slider_animation_time = 200
-slider_width = 8.0
-slider_least_height = 24.0
-rect_round_corner = 10.0
+slider_width = 6.0
+slider_least_height = 28.0
+rect_round_corner = 12.0
 # icon_path = "icon"
 
 [Bright]
-color = [ 0xEFF1F5FF, 0xCCD0DAFF, 0x8CAAEEFF, 0xFE640BFF, 0xABC4FFFF,
-          0xACB0BEFF, 0x8CAAEEFF, 0xCCD0DAFF, 0x8CAAEEFF ]
-text_color = [ 0x4C4F69FF ]
-divider_color = 0xBCC0CCFF
+color = [ 0xF7F8FCFF, 0xE9EDF5FF, 0xE0E7FFFF, 0xA5B4FCFF, 0xC7D2FEFF,
+          0xD8DFEAFF, 0x818CF8FF, 0xC3CCDAFF, 0x818CF8FF ]
+text_color = [ 0x172033FF, 0x334155FF, 0x3B4763FF ]
+divider_color = 0xD3DAE6FF
 
 [Dark]
-color = [ 0x1E1E2EFF, 0x313244FF, 0x1E66F5FF, 0xFAB387FF, 0x89B4FAFF,
-          0x585B70FF, 0x1E66F5FF, 0x45475AFF, 0x89B4FAFF ]
-text_color = [ 0xCDD6F4FF ]
-divider_color = 0x45475AFF
+color = [ 0x111522FF, 0x1B2233FF, 0x3730A3FF, 0x4F46E5FF, 0x4338CAFF,
+          0x303A4EFF, 0x4F46E5FF, 0x3B465CFF, 0x818CF8FF ]
+text_color = [ 0xF8FAFCFF, 0xE2E8F0FF, 0xD5DEEDFF ]
+divider_color = 0x2B3548FF
