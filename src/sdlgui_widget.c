@@ -1723,6 +1723,857 @@ void slider_mouse(void *p){
     }
     slider->last_left=pressed?1u:0u;
 }
+/* ---- 输入框控件：在 layout_input 之上补全背景/边框/光标/占位/图标 ---- */
+
+#define INPUT_ICON_CROSS 0
+#define INPUT_ICON_SEARCH 1
+#define INPUT_DEFAULT_BLINK 1000
+
+static void input_widget_update(void *p);
+static float item_theme_height(void);
+
+typedef struct {
+    float ax;
+    float ay;
+    float bx;
+    float by;
+}input_icon_stroke_t;
+
+static int input_widget_contains(const layout_t *l,float x,float y){
+    if(l==NULL){
+        return 0;
+    }
+    return x>=l->x&&x<=l->x+l->width&&y>=l->y&&y<=l->y+l->height;
+}
+
+static char *input_widget_strdup(const char *text){
+    if(text==NULL){
+        return NULL;
+    }
+    size_t size=strlen(text)+1;
+    char *copy=malloc(size);
+    if(copy!=NULL){
+        memcpy(copy,text,size);
+    }
+    return copy;
+}
+
+static void input_widget_draw_color(unsigned color){
+    SDL_Renderer *renderer=get_renderer();
+    if(renderer==NULL){
+        return;
+    }
+    SDL_SetRenderDrawColor(renderer,
+        (Uint8)((color>>24)&0xFF),
+        (Uint8)((color>>16)&0xFF),
+        (Uint8)((color>>8)&0xFF),
+        (Uint8)(color&0xFF));
+    SDL_SetRenderDrawBlendMode(renderer,SDL_BLENDMODE_BLEND);
+}
+
+/* 点到圆头线段的最短距离，用于按覆盖率生成图标 */
+static float input_icon_stroke_distance(float px,float py,const input_icon_stroke_t *stroke){
+    float dx=stroke->bx-stroke->ax;
+    float dy=stroke->by-stroke->ay;
+    float length2=dx*dx+dy*dy;
+    float t=0.0f;
+    if(length2>0.0f){
+        t=((px-stroke->ax)*dx+(py-stroke->ay)*dy)/length2;
+        if(t<0.0f){
+            t=0.0f;
+        }else if(t>1.0f){
+            t=1.0f;
+        }
+    }
+
+    float offset_x=stroke->ax+t*dx-px;
+    float offset_y=stroke->ay+t*dy-py;
+    return SDL_sqrtf(offset_x*offset_x+offset_y*offset_y);
+}
+
+/* 在物理像素表面上画圆环和若干线段，输出白色 + 覆盖率 alpha。
+ * 绘制时再用 SDL_SetTextureColorMod() 染色，这样一套纹理能适配任何主题色。 */
+static void input_icon_paint(SDL_Surface *surface,int size,
+    float ring_x,float ring_y,float ring_radius,
+    const input_icon_stroke_t *strokes,int stroke_count,float half_width){
+    for(int y=0;y<size;y++){
+        for(int x=0;x<size;x++){
+            float px=(float)x+0.5f;
+            float py=(float)y+0.5f;
+            float distance=1.0e9f;
+
+            for(int i=0;i<stroke_count;i++){
+                float d=input_icon_stroke_distance(px,py,&strokes[i]);
+                if(d<distance){
+                    distance=d;
+                }
+            }
+            if(ring_radius>0.0f){
+                float dx=px-ring_x;
+                float dy=py-ring_y;
+                float d=SDL_fabsf(SDL_sqrtf(dx*dx+dy*dy)-ring_radius);
+                if(d<distance){
+                    distance=d;
+                }
+            }
+
+            float coverage=half_width+0.5f-distance;
+            if(coverage<=0.0f){
+                continue;
+            }
+            if(coverage>1.0f){
+                coverage=1.0f;
+            }
+            SDL_WriteSurfacePixel(surface,x,y,255,255,255,
+                (Uint8)SDL_roundf(coverage*255.0f));
+        }
+    }
+}
+
+/* 生成内置图标：× 或放大镜。纹理按物理像素生成，绘制时缩放到逻辑尺寸，
+ * 这样高分屏上不需要依赖字体字形或主题资源里的图片。 */
+static SDL_Texture *input_icon_create(int kind,float size){
+    SDL_Renderer *renderer=get_renderer();
+    if(renderer==NULL||size<=0.0f){
+        return NULL;
+    }
+
+    float scale=sdlgui_get_scale();
+    if(scale<=0.0f){
+        scale=1.0f;
+    }
+    int pixels=(int)SDL_roundf(size*scale);
+    if(pixels<4){
+        pixels=4;
+    }
+
+    SDL_Surface *surface=SDL_CreateSurface(pixels,pixels,SDL_PIXELFORMAT_RGBA32);
+    if(surface==NULL){
+        return NULL;
+    }
+    SDL_ClearSurface(surface,0.0f,0.0f,0.0f,0.0f);
+
+    float extent=(float)pixels;
+    float half=SDL_max(1.0f,extent*0.07f);
+    float inset=extent*0.26f;
+    input_icon_stroke_t strokes[2];
+    int count=0;
+    float ring_x=0.0f;
+    float ring_y=0.0f;
+    float ring_radius=0.0f;
+
+    if(kind==INPUT_ICON_SEARCH){
+        ring_radius=extent*0.24f;
+        ring_x=extent*0.42f;
+        ring_y=extent*0.42f;
+        float diagonal=ring_radius*0.7071f;
+        strokes[0]=(input_icon_stroke_t){
+            .ax=ring_x+diagonal,.ay=ring_y+diagonal,
+            .bx=extent-inset,.by=extent-inset
+        };
+        count=1;
+    }else{
+        strokes[0]=(input_icon_stroke_t){
+            .ax=inset,.ay=inset,.bx=extent-inset,.by=extent-inset
+        };
+        strokes[1]=(input_icon_stroke_t){
+            .ax=extent-inset,.ay=inset,.bx=inset,.by=extent-inset
+        };
+        count=2;
+    }
+
+    input_icon_paint(surface,pixels,ring_x,ring_y,ring_radius,strokes,count,half);
+
+    SDL_Texture *texture=SDL_CreateTextureFromSurface(renderer,surface);
+    SDL_DestroySurface(surface);
+    return texture;
+}
+
+static void input_widget_draw(void *p){
+    widget_input_t *widget=p;
+    if(widget==NULL||widget->box==NULL||get_renderer()==NULL){
+        return;
+    }
+
+    draft_draw_rrect(widget->box);
+
+    draft_texture_t *icon=widget->icon;
+    if(icon==NULL||icon->tex==NULL){
+        return;
+    }
+
+    icon->x=widget->l.x+widget->padding;
+    icon->y=widget->l.y+(widget->l.height-icon->height)/2.0f;
+    if(widget->icon_owned){
+        unsigned color=widget->icon_color;
+        SDL_SetTextureColorMod(icon->tex,
+            (Uint8)((color>>24)&0xFF),
+            (Uint8)((color>>16)&0xFF),
+            (Uint8)((color>>8)&0xFF));
+        SDL_SetTextureAlphaMod(icon->tex,(Uint8)(color&0xFF));
+    }
+    draft_draw_texture(icon);
+}
+
+/* 占位文字放在独立子布局里，裁剪范围等于文字区，不会盖到图标或清除按钮上 */
+static void input_placeholder_draw(void *p){
+    layout_t *l=p;
+    widget_input_t *widget=l!=NULL?(widget_input_t *)l->parent:NULL;
+    if(widget==NULL||widget->placeholder==NULL||widget->input==NULL){
+        return;
+    }
+    if(widget->input->length>0){
+        return;
+    }
+
+    draft_text_t *text=widget->placeholder;
+    text->x=l->x;
+    text->y=l->y+(l->height-text->height)/2.0f;
+    draft_draw_text(text);
+}
+
+/* 光标与清除按钮画在文字之后，保证不会被文字盖住 */
+static void input_overlay_draw(void *p){
+    layout_t *l=p;
+    widget_input_t *widget=l!=NULL?(widget_input_t *)l->parent:NULL;
+    if(widget==NULL||widget->input==NULL||get_renderer()==NULL){
+        return;
+    }
+
+    layout_input_t *input=widget->input;
+    float center_x=l->x+l->width-widget->padding-widget->clear_size/2.0f;
+    float center_y=l->y+l->height/2.0f;
+
+    if(widget->clear_visible&&widget->clear_icon!=NULL&&widget->clear_icon->tex!=NULL){
+        float diameter=widget->clear_size+8.0f;
+        if(widget->clear_hover&&widget->clear_bg!=NULL){
+            widget->clear_bg->x=center_x-diameter/2.0f;
+            widget->clear_bg->y=center_y-diameter/2.0f;
+            widget->clear_bg->width=diameter;
+            widget->clear_bg->height=diameter;
+            widget->clear_bg->r=diameter/2.0f;
+            widget->clear_bg->auto_radius=0;
+            widget->clear_bg->color=(widget->clear_color&0xFFFFFF00u)|0x22u;
+            widget->clear_bg->border_color=0;
+            draft_draw_rrect(widget->clear_bg);
+        }
+
+        SDL_Texture *texture=widget->clear_icon->tex;
+        unsigned color=widget->clear_color;
+        Uint8 alpha=(Uint8)(color&0xFF);
+        if(!widget->clear_hover){
+            alpha=(Uint8)((unsigned)alpha*3u/5u);
+        }
+        SDL_SetTextureColorMod(texture,
+            (Uint8)((color>>24)&0xFF),
+            (Uint8)((color>>16)&0xFF),
+            (Uint8)((color>>8)&0xFF));
+        SDL_SetTextureAlphaMod(texture,alpha);
+        widget->clear_icon->x=center_x-widget->clear_icon->width/2.0f;
+        widget->clear_icon->y=center_y-widget->clear_icon->height/2.0f;
+        draft_draw_texture(widget->clear_icon);
+    }
+
+    if(!widget->caret_visible||!layout_input_is_focused(input)){
+        return;
+    }
+
+    float caret_x=input->l.x+layout_input_prefix_width(input)-input->text_scroll;
+    /* 光标覆盖完整字体行高，再略加一点高度，避免看起来比文字矮一截。 */
+    float height=widget->line_height+widget->caret_inset;
+    if(height<2.0f){
+        height=2.0f;
+    }
+    if(height>input->l.height){
+        height=input->l.height;
+    }
+
+    float right=input->l.x+input->l.width-widget->caret_width;
+    if(caret_x<input->l.x){
+        caret_x=input->l.x;
+    }else if(caret_x>right){
+        caret_x=right;
+    }
+
+    SDL_FRect caret={
+        .x=caret_x,
+        .y=input->l.y+(input->l.height-height)/2.0f,
+        .w=widget->caret_width,
+        .h=height
+    };
+    input_widget_draw_color(widget->caret_color);
+    SDL_RenderFillRect(get_renderer(),&caret);
+}
+
+static void input_widget_update(void *p){
+    widget_input_t *widget=p;
+    if(widget==NULL||widget->input==NULL){
+        return;
+    }
+
+    layout_update(&widget->l);
+
+    layout_input_t *input=widget->input;
+    float width=widget->l.width;
+    float height=widget->l.height;
+    if(width<=0.0f||height<=0.0f){
+        return;
+    }
+
+    int hover=input_widget_contains(&widget->l,get_mouse_x(),get_mouse_y());
+    int focused=input->focused?1:0;
+
+    /* 键盘/粘贴在 sdlgui.c 里直接改 layout_input；这里统一检测并转发 change 回调。 */
+    const char *text=layout_input_text(input);
+    int text_changed=input->length!=widget->last_length||
+        (widget->last_text!=NULL?strcmp(text,widget->last_text)!=0:text[0]!='\0');
+    int cursor_changed=input->cursor!=widget->last_cursor;
+
+    if(text_changed&&widget->change_callback!=NULL){
+        widget->change_callback(text,widget->change_data);
+    }
+
+    if(text_changed||cursor_changed){
+        if(focused){
+            layout_input_scroll_into_view(input);
+        }
+        widget->caret_time=SDL_GetTicks();
+    }else if(focused&&!widget->last_focused){
+        widget->caret_time=SDL_GetTicks();
+    }
+    widget->last_focused=focused?1u:0u;
+
+    /* 回调里可能改写了文字，重新取一次再同步基准值 */
+    text=layout_input_text(input);
+    if(widget->last_text==NULL||strcmp(text,widget->last_text)!=0){
+        char *copy=input_widget_strdup(text);
+        if(copy!=NULL){
+            free(widget->last_text);
+            widget->last_text=copy;
+        }
+    }
+    widget->last_length=input->length;
+    widget->last_cursor=input->cursor;
+
+    /* 几何：左图标 + 文字区 + 右清除按钮 */
+    float icon_width=0.0f;
+    if(widget->icon!=NULL){
+        icon_width=widget->icon->width+widget->icon_gap;
+    }
+    int clear_visible=widget->show_clear&&input->length>0&&(focused||hover);
+    widget->clear_visible=clear_visible?1u:0u;
+    float clear_width=clear_visible?widget->clear_size+widget->clear_gap:0.0f;
+
+    float text_left=widget->l.x+widget->padding+icon_width;
+    float text_width=widget->l.x+width-widget->padding-clear_width-text_left;
+    if(text_width<1.0f){
+        text_width=1.0f;
+    }
+
+    input->l.x=text_left;
+    input->l.y=widget->l.y;
+    input->l.width=text_width;
+    input->l.height=height;
+
+    if(widget->placeholder_box!=NULL){
+        widget->placeholder_box->x=text_left;
+        widget->placeholder_box->y=widget->l.y;
+        widget->placeholder_box->width=text_width;
+        widget->placeholder_box->height=height;
+    }
+    if(widget->overlay!=NULL){
+        widget->overlay->x=widget->l.x;
+        widget->overlay->y=widget->l.y;
+        widget->overlay->width=width;
+        widget->overlay->height=height;
+    }
+
+    if(widget->box!=NULL){
+        widget->box->x=widget->l.x;
+        widget->box->y=widget->l.y;
+        widget->box->width=width;
+        widget->box->height=height;
+        widget->box->r=widget->corner_radius;
+        widget->box->auto_radius=0;
+    }
+
+    /* 背景/边框朝目标色渐变，避免聚焦时颜色突跳 */
+    unsigned back_color=focused?widget->focus_color:(hover?widget->hover_color:widget->color);
+    unsigned border_color=focused?widget->focus_border_color:widget->border_color;
+    unsigned long now=SDL_GetTicks();
+    if(back_color!=widget->anim_to_color||border_color!=widget->anim_to_border){
+        widget->anim_from_color=widget->shown_color;
+        widget->anim_from_border=widget->shown_border;
+        widget->anim_to_color=back_color;
+        widget->anim_to_border=border_color;
+        widget->anim_start=now;
+    }
+    unsigned long elapsed=now-widget->anim_start;
+    widget->shown_color=color_gradient(widget->anim_to_color,widget->anim_from_color,
+        elapsed,widget->animation_time);
+    widget->shown_border=color_gradient(widget->anim_to_border,widget->anim_from_border,
+        elapsed,widget->animation_time);
+    if(widget->box!=NULL){
+        widget->box->color=widget->shown_color;
+        widget->box->border_color=widget->shown_border;
+    }
+
+    /* 光标闪烁：编辑后先常亮一个周期，之后按半周期亮灭 */
+    int caret_visible=0;
+    if(focused){
+        unsigned long half=widget->caret_blink_time/2;
+        unsigned long idle=now-widget->caret_time;
+        if(widget->caret_blink_time==0||half==0||idle<widget->caret_blink_time){
+            caret_visible=1;
+        }else{
+            caret_visible=((idle/half)%2)==0?1:0;
+        }
+    }
+    widget->caret_visible=caret_visible?1u:0u;
+}
+
+static void input_widget_mouse(void *p){
+    widget_input_t *widget=p;
+    if(widget==NULL||widget->input==NULL){
+        return;
+    }
+
+    layout_t *l=&widget->l;
+    int pressed=get_mouse_left()?1:0;
+    int inside=input_widget_contains(l,get_mouse_x(),get_mouse_y());
+
+    float center_x=l->x+l->width-widget->padding-widget->clear_size/2.0f;
+    float center_y=l->y+l->height/2.0f;
+    float hit=widget->clear_size/2.0f+4.0f;
+    int clear_hit=0;
+    if(widget->clear_visible){
+        float mouse_x=get_mouse_x();
+        float mouse_y=get_mouse_y();
+        clear_hit=mouse_x>=center_x-hit&&mouse_x<=center_x+hit&&
+                 mouse_y>=center_y-hit&&mouse_y<=center_y+hit;
+    }
+    widget->clear_hover=(inside&&clear_hit)?1u:0u;
+
+    if(!widget->controllable){
+        widget->last_left=pressed?1u:0u;
+        return;
+    }
+
+    if(pressed&&!widget->last_left&&clear_hit){
+        widget->clear_press=1;
+    }
+    if(!pressed&&widget->last_left&&widget->clear_press){
+        widget->clear_press=0;
+        if(clear_hit){
+            layout_input_focus(widget->input);
+            layout_input_set_text(widget->input,"");
+            layout_input_set_cursor(widget->input,0);
+        }
+    }
+
+    /* 文字区按下或按住拖动：光标贴到离鼠标最近的字符边界 */
+    if(pressed&&inside&&!clear_hit){
+        layout_input_focus(widget->input);
+        layout_input_set_cursor_at(widget->input,get_mouse_x());
+        widget->caret_time=SDL_GetTicks();
+    }
+
+    widget->last_left=pressed?1u:0u;
+}
+
+static void input_widget_clear(void *p){
+    widget_input_t *widget=p;
+    if(widget==NULL){
+        return;
+    }
+
+    /* 子布局已经先于本函数被 delete_layout() 删除，这里只清自己的资源 */
+    widget->input=NULL;
+    widget->placeholder_box=NULL;
+    widget->overlay=NULL;
+
+    if(widget->placeholder!=NULL){
+        draft_text_clear(widget->placeholder);
+        free(widget->placeholder);
+        widget->placeholder=NULL;
+    }
+    free(widget->placeholder_text);
+    widget->placeholder_text=NULL;
+
+    if(widget->icon!=NULL){
+        draft_texture_clear(widget->icon);   /* 只销毁自己创建的纹理 */
+        free(widget->icon);
+        widget->icon=NULL;
+    }
+    if(widget->clear_icon!=NULL){
+        draft_texture_clear(widget->clear_icon);
+        free(widget->clear_icon);
+        widget->clear_icon=NULL;
+    }
+
+    free(widget->clear_bg);
+    widget->clear_bg=NULL;
+    free(widget->box);
+    widget->box=NULL;
+    free(widget->last_text);
+    widget->last_text=NULL;
+}
+
+void widget_input_set_placeholder(widget_input_t *widget,const char *placeholder){
+    if(widget==NULL||widget->input==NULL){
+        return;
+    }
+
+    if(widget->placeholder!=NULL){
+        draft_text_clear(widget->placeholder);
+        free(widget->placeholder);
+        widget->placeholder=NULL;
+    }
+    free(widget->placeholder_text);
+    widget->placeholder_text=NULL;
+
+    if(placeholder==NULL||placeholder[0]=='\0'){
+        return;
+    }
+
+    char *copy=input_widget_strdup(placeholder);
+    if(copy==NULL){
+        return;
+    }
+
+    align_t zero=make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f);
+    draft_text_t *text=draft_create_text(zero,widget->input->font,copy,0.0f,0.0f,
+        widget->placeholder_color);
+    if(text==NULL){
+        free(copy);
+        return;
+    }
+    text->can_enter=0;
+    text->can_change=0;
+    widget->placeholder_text=copy;
+    widget->placeholder=text;
+}
+
+void widget_input_set_icon(widget_input_t *widget,SDL_Texture *icon){
+    if(widget==NULL){
+        return;
+    }
+
+    if(widget->icon!=NULL){
+        draft_texture_clear(widget->icon);
+        free(widget->icon);
+        widget->icon=NULL;
+    }
+    widget->icon_owned=0;
+    if(icon==NULL){
+        return;
+    }
+
+    float size=widget->icon_size>0.0f?widget->icon_size:16.0f;
+    align_t zero=make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f);
+    widget->icon=draft_create_texture(zero,icon,size,size);
+}
+
+void widget_input_set_clear(widget_input_t *widget,int enable){
+    if(widget==NULL){
+        return;
+    }
+
+    widget->show_clear=enable?1u:0u;
+    if(!widget->show_clear||widget->clear_icon!=NULL){
+        return;
+    }
+
+    float size=widget->clear_size>0.0f?widget->clear_size:16.0f;
+    SDL_Texture *texture=input_icon_create(INPUT_ICON_CROSS,size);
+    if(texture==NULL){
+        widget->show_clear=0;
+        return;
+    }
+
+    align_t zero=make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f);
+    draft_texture_t *draft=draft_create_texture(zero,texture,size,size);
+    if(draft==NULL){
+        SDL_DestroyTexture(texture);
+        widget->show_clear=0;
+        return;
+    }
+    draft->owns_texture=1;
+    widget->clear_icon=draft;
+}
+
+void widget_input_set_text(widget_input_t *widget,const char *text){
+    if(widget==NULL||widget->input==NULL){
+        return;
+    }
+
+    layout_input_set_text(widget->input,text);
+    /* 程序化改写文本后光标放到末尾，用户可以直接接着输入 */
+    layout_input_set_cursor(widget->input,widget->input->length);
+    widget->caret_time=SDL_GetTicks();
+}
+
+const char *widget_input_get_text(const widget_input_t *widget){
+    if(widget==NULL||widget->input==NULL){
+        return "";
+    }
+    return layout_input_text(widget->input);
+}
+
+void widget_input_set_max_bytes(widget_input_t *widget,size_t max_bytes){
+    if(widget==NULL||widget->input==NULL){
+        return;
+    }
+
+    widget->input->max_bytes=max_bytes;
+    if(max_bytes>0&&widget->input->length>max_bytes){
+        /* 复用 set_text 的截断逻辑，保证不会切出半个 UTF-8 字符 */
+        layout_input_set_text(widget->input,widget->input->text);
+    }
+}
+
+void widget_input_focus(widget_input_t *widget){
+    if(widget!=NULL&&widget->input!=NULL){
+        layout_input_focus(widget->input);
+        widget->caret_time=SDL_GetTicks();
+    }
+}
+
+void widget_input_blur(widget_input_t *widget){
+    if(widget!=NULL&&widget->input!=NULL&&layout_input_is_focused(widget->input)){
+        layout_input_blur();
+    }
+}
+
+int widget_input_is_focused(const widget_input_t *widget){
+    return widget!=NULL&&layout_input_is_focused(widget->input);
+}
+
+void widget_input_set_caret_blink(widget_input_t *widget,unsigned long blink_time){
+    if(widget==NULL){
+        return;
+    }
+    widget->caret_blink_time=blink_time;
+    widget->caret_time=SDL_GetTicks();
+    widget->caret_visible=1;
+}
+
+/* 控件创建的图标纹理归控件所有（清除按钮、放大镜），clear 时随 draft 一起销毁 */
+static int input_widget_take_icon(widget_input_t *widget,SDL_Texture *texture,float size){
+    if(widget==NULL||texture==NULL){
+        if(texture!=NULL){
+            SDL_DestroyTexture(texture);
+        }
+        return 0;
+    }
+
+    if(widget->icon!=NULL){
+        draft_texture_clear(widget->icon);
+        free(widget->icon);
+        widget->icon=NULL;
+    }
+
+    align_t zero=make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f);
+    draft_texture_t *draft=draft_create_texture(zero,texture,size,size);
+    if(draft==NULL){
+        SDL_DestroyTexture(texture);
+        widget->icon_owned=0;
+        return 0;
+    }
+
+    draft->owns_texture=1;
+    widget->icon=draft;
+    widget->icon_owned=1;
+    widget->icon_size=size;
+    return 1;
+}
+
+/* 回车从 layout_input 转发到控件的 submit_callback */
+static void input_widget_submit(const char *text,void *data){
+    widget_input_t *widget=data;
+    if(widget!=NULL&&widget->submit_callback!=NULL){
+        widget->submit_callback(text,widget->submit_data);
+    }
+}
+
+widget_input_t *widget_create_raw_input(void *parent,float w,float h,float r,align_t align,
+    TTF_Font *font,const char *text,
+    unsigned color,unsigned hover_color,unsigned focus_color,
+    unsigned border_color,unsigned focus_border_color,
+    unsigned text_color,unsigned placeholder_color,unsigned caret_color,unsigned clear_color,
+    unsigned long animation_time,unsigned long caret_blink_time,
+    input_change_func change_callback,void *change_data,
+    input_callback_func submit_callback,void *submit_data){
+    if(w<=0.0f||h<=0.0f||font==NULL){
+        return NULL;
+    }
+
+    widget_input_t *widget=(widget_input_t *)create_layout(
+        sizeof(*widget),
+        parent,
+        w,
+        h,
+        input_widget_draw,
+        input_widget_update,
+        input_widget_clear,
+        input_widget_mouse,
+        align
+    );
+    if(widget==NULL){
+        return NULL;
+    }
+
+    widget->color=color;
+    widget->hover_color=hover_color;
+    widget->focus_color=focus_color;
+    widget->border_color=border_color;
+    widget->focus_border_color=focus_border_color;
+    widget->text_color=text_color;
+    widget->placeholder_color=placeholder_color;
+    widget->caret_color=caret_color;
+    widget->clear_color=clear_color;
+    widget->icon_color=text_color;
+
+    widget->corner_radius=r>=0.0f?r:h/2.0f;
+    widget->padding=SDL_max(8.0f,h*0.3f);
+    widget->icon_size=SDL_min(h*0.55f,18.0f);
+    widget->icon_gap=SDL_max(4.0f,h*0.2f);
+    widget->clear_size=SDL_min(h*0.5f,16.0f);
+    widget->clear_gap=SDL_max(4.0f,h*0.15f);
+    widget->caret_width=SDL_max(1.0f,SDL_floorf(h/16.0f));
+    widget->caret_inset=SDL_max(2.0f,h*0.12f);
+    widget->animation_time=animation_time;
+    widget->caret_blink_time=caret_blink_time;
+
+    float scale=sdlgui_get_scale();
+    if(scale<=0.0f){
+        scale=1.0f;
+    }
+    widget->line_height=(float)TTF_GetFontHeight(font)/scale;
+    if(widget->line_height<=0.0f){
+        widget->line_height=h;
+    }
+
+    widget->shown_color=color;
+    widget->shown_border=border_color;
+    widget->anim_from_color=color;
+    widget->anim_from_border=border_color;
+    widget->anim_to_color=color;
+    widget->anim_to_border=border_color;
+    widget->anim_start=SDL_GetTicks();
+    widget->caret_time=widget->anim_start;
+    widget->controllable=1;
+    widget->change_callback=change_callback;
+    widget->change_data=change_data;
+    widget->submit_callback=submit_callback;
+    widget->submit_data=submit_data;
+
+    widget->last_text=input_widget_strdup(text!=NULL?text:"");
+    if(widget->last_text==NULL){
+        delete_layout((layout_t *)widget);
+        return NULL;
+    }
+    widget->last_length=strlen(widget->last_text);
+    widget->last_cursor=widget->last_length;
+
+    align_t zero=make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f);
+
+    widget->box=draft_create_rrect(zero,w,h,widget->corner_radius,color,border_color);
+    widget->clear_bg=draft_create_rrect(zero,1.0f,1.0f,1.0f,0,0);
+    widget->placeholder_box=create_layout(sizeof(layout_t),(layout_t *)widget,
+        1.0f,1.0f,input_placeholder_draw,layout_update,NULL,NULL,zero);
+    widget->input=create_layout_input(widget,1.0f,1.0f,zero,text,font,text_color,0,
+        input_widget_submit,widget);
+    widget->overlay=create_layout(sizeof(layout_t),(layout_t *)widget,
+        1.0f,1.0f,input_overlay_draw,layout_update,NULL,NULL,zero);
+    if(widget->box==NULL||widget->clear_bg==NULL||
+       widget->placeholder_box==NULL||widget->input==NULL||widget->overlay==NULL){
+        delete_layout((layout_t *)widget);
+        return NULL;
+    }
+
+    input_widget_update(widget);
+    return widget;
+}
+
+widget_input_t *widget_create_input(void *parent,float width,align_t align,
+    const char *placeholder,
+    input_change_func change_callback,void *change_data,
+    input_callback_func submit_callback,void *submit_data){
+    if(width<=0.0f){
+        layout_t *p=parent!=NULL?(layout_t *)parent:get_root_layout();
+        width=p!=NULL?p->width:0.0f;
+    }
+    if(width<=0.0f){
+        width=200.0f;
+    }
+
+    float height=item_theme_height();
+    TTF_Font *font=obtain_font(get_font(TEXT_CONTEXT),get_text_size(TEXT_CONTEXT));
+    if(font==NULL){
+        return NULL;
+    }
+
+    /* 主题没有专门的输入框色，用面板色做底、聚焦时退到主色，边框用分割线色。
+     * 悬停色取面板色到按钮色之间的 1/4，保持主题配色统一。 */
+    unsigned text_color=get_text_color(TEXT_CONTEXT);
+    unsigned placeholder_color=(text_color&0xFFFFFF00u)|0x80u;
+    unsigned hover_color=color_gradient(get_color(COLOR_BUTTON),
+        get_color(COLOR_SECONDARY),1,4);
+
+    widget_input_t *widget=widget_create_raw_input(
+        parent,
+        width,
+        height,
+        get_theme()->rect_round_corner,
+        align,
+        font,
+        "",
+        get_color(COLOR_SECONDARY),
+        hover_color,
+        get_color(COLOR_MAIN),
+        get_divider_color(),
+        get_color(COLOR_BUTTON_HIGHLIGHT),
+        text_color,
+        placeholder_color,
+        text_color,
+        placeholder_color,
+        get_theme()->button_animation_time,
+        INPUT_DEFAULT_BLINK,
+        change_callback,
+        change_data,
+        submit_callback,
+        submit_data
+    );
+    if(widget==NULL){
+        return NULL;
+    }
+
+    widget_input_set_placeholder(widget,placeholder);
+    return widget;
+}
+
+widget_input_t *widget_create_search_input(void *parent,float width,align_t align,
+    const char *placeholder,
+    input_change_func change_callback,void *change_data,
+    input_callback_func submit_callback,void *submit_data){
+    widget_input_t *widget=widget_create_input(parent,width,align,placeholder,
+        change_callback,change_data,submit_callback,submit_data);
+    if(widget==NULL){
+        return NULL;
+    }
+
+    float size=widget->icon_size>0.0f?widget->icon_size:16.0f;
+    SDL_Texture *icon=input_icon_create(INPUT_ICON_SEARCH,size);
+    if(icon!=NULL&&input_widget_take_icon(widget,icon,size)){
+        widget->icon_color=widget->placeholder_color;
+    }
+    widget_input_set_clear(widget,1);
+
+    input_widget_update(widget);
+    return widget;
+}
+
 /* ---- 设置行：左侧文字 + 右侧控件 ---- */
 
 #define ITEM_SIDE_MARGIN 12.0f

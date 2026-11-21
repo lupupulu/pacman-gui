@@ -449,7 +449,7 @@ typedef struct {
 
 /* content_height>0 时固定整页高度；<=0 时按子布局自动计算（至少为视口高度）。
  * 变参是若干 layout_t*，以 NULL 结尾；子布局归 tab 所有。 */
-layout_tab_t *create_layout_tab(void *parent,float w,float h,align_t align,float content_height,...);
+layout_tab_t *create_layout_tab(void *parent,float w,float h,align_t align,double content_height,...);
 
 /* 追加一个页面子布局；它的 align 相对整页（to_draw）计算。成功后归 tab 所有。 */
 int tab_add(layout_tab_t *tab,layout_t *item);
@@ -515,5 +515,18 @@ void layout_input_blur(void);
 const char *layout_input_text(const layout_input_t *input);
 size_t layout_input_cursor(const layout_input_t *input);
 int layout_input_is_focused(const layout_input_t *input);
+
+/* ---- 程序化编辑，供 widget 层的输入框控件组合使用 ---- */
+
+/* 光标前缀的逻辑宽度；文字实际从 l.x-text_scroll 开始绘制。 */
+float layout_input_prefix_width(const layout_input_t *input);
+/* 替换全部文字：按 max_bytes 截断到字符边界，光标夹进文本范围并滚到可见处。 */
+void layout_input_set_text(layout_input_t *input,const char *text);
+/* 设置光标字节下标；会自动对齐到字符边界，并保证光标在文字区内可见。 */
+void layout_input_set_cursor(layout_input_t *input,size_t cursor);
+/* 按窗口横坐标就近定位光标，用于鼠标点击/拖拽。 */
+void layout_input_set_cursor_at(layout_input_t *input,float x);
+/* 调整 text_scroll，让当前光标落在文字区内；不会响应横向滚轮，只跟随光标。 */
+void layout_input_scroll_into_view(layout_input_t *input);
 
 #endif

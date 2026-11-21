@@ -109,10 +109,10 @@ pkg-config --cflags sdl3 sdl3-ttf
 Makefile       构建规则（macOS 用 Homebrew 前缀 + CoreText，Linux 用 pkg-config + fontconfig）
 src/main.c     程序入口与主循环
 src/init.c/.h  主界面布局、selector、tabs 和页面创建
-src/pacman.c   包管理器后端注册表与统一包视图
+src/pacman.c   包管理器后端注册表、统一包视图与软件包卡片
 src/pacman.h    package_t、pacman_t 和后端接口
 src/pacman_alpm.c/.h      libalpm 已安装包后端
-src/pacman_homebrew.c/.h  Homebrew 已安装包后端
+src/pacman_homebrew.c/.h  Homebrew 后端（已安装枚举与可安装包搜索）
 src/sdlgui.c   窗口、鼠标、布局、绘制与高 DPI 处理
 src/sdlgui.h
 src/sdlgui_theme.c   主题、配色、字体缓存与 TOML 配置
@@ -280,7 +280,7 @@ int on = sw->on;
 按原图颜色绘制，不再按颜色字段着色。图标默认铺满开关高度，因此圆形边缘与
 开关上下外沿对齐；主题没有提供该图标时 `widget_create_switch()` 返回 NULL。
 
-旋钮位置由主题根层的 `switch_animation_time` 控制动画（默认 120 ms）。
+旋钮位置由主题根层的 `switch_animation_time` 控制动画（默认 160 ms）。
 
 不依赖主题的 raw 版本：
 
@@ -517,7 +517,9 @@ layout_label_t *label = create_layout_label(
 
 ## Package 卡片
 
-`create_layout_package(package_t *package)` 创建一个高 104 的软件包卡片：
+`create_layout_package(package_t *package)` 创建一个高 104 的软件包卡片。
+卡片实现放在 `pacman.c` 里（原来的 `pacman_gui.c/.h` 已合并进去），
+`pacman.h` 只暴露这一个构造函数：
 
 - 包名：`TEXT_SUBTITLE`
 - 版本、维护者/提交者、许可证：`TEXT_CONTEXT`
@@ -529,26 +531,49 @@ layout_label_t *label = create_layout_label(
 - 按钮回调暂未接逻辑，只用于绘制测试
 
 `init.c` 里创建 tabs 和页面布局，`main.c` 只负责初始化和事件循环：
-- `package` 页：暂时为空矩形
+- `package` 页：搜索可安装包，结果卡片带 install 按钮
 - `installed` 页：所有已注册后端的已安装包列表，可滚动，右侧带滑块
 - `settings` 页：空矩形
 
-installed 页是一个容器，里面放 `layout_list_t` 和右侧 `widget_slider_t`；
+installed 页是一个容器，里面放 `layout_list_t`、右侧 `widget_slider_t`，
+顶部还有一行搜索框（`widget_create_search_input()`）和空结果提示；
 滑块通过 `list_get_content_height()` 获取内容总长度，并在页面更新时同步
 `list_get_slide()`。卡片宽度由所在的 `layout_list_t` 决定，内部标签和按钮会在
 `package_update()` 中按卡片宽度重新定位。后端没有提供 maintainer/submitter 时，
 人员信息行会被省略。UI 初始化时列表为空，后台枚举线程结束后由主循环
-分批创建卡片：`init_ui_begin_refresh_packages()` 记录包总数，
-`init_ui_refresh_packages_batch(32)` 每帧追加一批，因此建卡期间界面仍可交互。
+推进“已枚举”游标：`init_ui_begin_refresh_packages()` 记录包总数，
+`init_ui_refresh_packages_batch(32)` 每帧推进游标，卡片则由
+`installed_page_update()` 按 `PAGE_CARDS_PER_FRAME` 每帧补进列表，
+因此建卡和输入搜索词期间界面都保持可响应。
+
+搜索框的 `change_callback` 只记录过滤词和脏标记，清空列表并重新扫描放在
+`installed_page_update()` 里做，避免在遍历子布局的过程中删除列表项。
+过滤不区分 ASCII 大小写，只匹配包名；没有命中时显示 “No matching packages”。
+
+### packages 搜索
+
+`package` 页走的是后端搜索，不依赖本地已安装列表：
+
+- 输入停顿 `PACKAGES_SEARCH_DELAY`（350 ms）后自动搜索，回车立即搜索
+- 搜索在 `pthread` 里调用 `pacman_search_all(keyword)`，结果写进独立的
+  可安装包注册表 `pkg_available`；主线程 `pthread_join` 之后才读取，
+  和已安装列表的线程约定一致
+- `join` 后用 `pacman_available_count()/pacman_available_at()` 按
+  `PAGE_CARDS_PER_FRAME` 每帧补卡片，所以结果很多时界面也不卡
+- 结果里已经安装过的包会被标记为 `PKG_STAT_INSTALLED` 并补上本地版本号，
+  卡片自动变成 update/delete 按钮
+- 关键词为空时只清空结果，不启动线程；没有结果时显示 “No matching packages”，
+  还没搜索时显示输入提示
 
 页面与 tabs 一样大，selector 浮在页面之上。`widget_create_tabs()` 会把传入的
-selector 标记为 `draw_last`，保证它晚于页面绘制。`installed_page` 把列表的
-`front_offset`/`back_offset` 设为 selector 高度：第一个 item 从 selector 下缘
-开始，滚动时可以从 selector 底下经过；末尾也留出同样的空间。
+selector 标记为 `draw_last`，保证它晚于页面绘制。两个包页面都把列表的
+`front_offset` 设为 selector 高度加搜索框高度，`back_offset` 留出 selector
+高度：第一个 item 从搜索框下缘开始，滚动时可以从 selector 和搜索框底下经过；
+末尾也留出同样的空间。
 
 ```c
-installed_page->list->front_offset=selector->l.l.height;
-installed_page->list->back_offset=selector->l.l.height;
+page_apply_header(&installed_page->rect,&installed_page->header_offset,
+    installed_page->search,installed_page->list,selector->l.l.height);
 ```
 
 ## 包管理器后端
@@ -576,11 +601,29 @@ for(size_t i=0;i<count;i++){
 
 `pacman_backend_find("alpm")` 按 `pacman_t.name` 查找已注册后端。
 
+### 可安装包视图
+
+`package` 页用另一套注册表 `pkg_available`，和已安装列表完全分开：
+
+- 后端实现 `pacman_t.search(keyword)`，通过 `pkg_available_add()` 把搜索结果
+  放进来；`from/meta_data` 同样是借用的常量字符串，其余字段由注册表接管；
+- `pkg_available_add()` 按 `from/name/meta_data` 去重，和 `pkg_add()` 不同，
+  它不会触发 `pkg_resync()`，避免在搜索线程里回头写已安装数组；
+- 新条目追加到末尾，**保持后端的返回顺序、不按字母排序**：搜索结果的相关性
+  由后端决定，页面也只按数组顺序生成卡片；
+- `pacman_search_all(keyword)` 先清空注册表，再依次调用所有支持搜索的后端；
+- 主线程用 `pacman_available_count()` / `pacman_available_at()` 按数组顺序遍历；
+- `pacman_installed_find(from,name)` 用来判断搜索结果是否已安装；
+- `pacman_quit_all()` 会一并释放可安装注册表。
+
+搜索线程只写 `pkg_available`，主线程 `pthread_join` 之后才读；页面在等待结果
+期间把 `scan_running` 置 0，因此不会并发访问。
+
 默认注册逻辑在 `register_default_backends()` 中：
 
 - `pacman_alpm_available()` 为真时注册 libalpm 后端；
 - `pacman_homebrew_available()` 为真时注册 Homebrew 后端；
-- 两个条件都不满足时后端列表为空，installed 页保持空列表。
+- 两个条件都不满足时后端列表为空，installed 页保持空列表，package 页搜不到结果。
 
 因此没有安装 Homebrew 的系统不会注册 Homebrew 后端，也不会执行 `brew` 命令。
 
@@ -620,7 +663,12 @@ Makefile 在构建时检查 `PATH`、`HOMEBREW_PREFIX`、`/opt/homebrew`、
 - 每个包创建一条 `package_t`，`stat` 统一设为 `PKG_STAT_INSTALLED`，
   `from = "homebrew"`，`meta_data` 标记 `formula` 或 `cask`；
 - Homebrew CLI 文本没有 licenses、maintainer、submitter、描述等字段，这些内容
-  使用卡片的空值回退。
+  使用卡片的空值回退；
+- `search(keyword)` 调用 `brew search --formula <keyword>` 和
+  `brew search --cask <keyword>`（带 `HOMEBREW_NO_AUTO_UPDATE=1`，避免搜索时
+  触发自动更新），逐行取包名并通过 `pkg_available_add()` 加入可安装视图；
+- 关键词只保留 `[A-Za-z0-9@._+-/]`，确保不会被拼进 shell 命令；
+- 搜索结果没有版本号，先填 `unknown`；命中已安装列表时由页面补上本地版本号。
 
 `pacman_init_all()` 只初始化各后端，不再枚举软件包。`main()` 在
 `sdlgui_init()` 之前调用它；`init_ui()` 完成后，主线程创建一个 pthread 执行
@@ -760,11 +808,72 @@ float text_width = input->text_width;
 
 `cursor` 是 UTF-8 字节下标，并且始终落在字符边界上。`max_bytes` 限制的是
 文本字节数（不含结尾 `\0`），截断时不会留下半个 UTF-8 字符。
-背景、光标和光标闪烁由外部根据这些状态绘制。
+背景、光标和光标闪烁由外部根据这些状态绘制；需要现成的外观和鼠标交互时
+用下面的 `widget_create_input()`。
+
+`layout_input` 也提供程序化编辑接口，供控件层组合使用：
+`layout_input_set_text()`、`layout_input_set_cursor()`、
+`layout_input_set_cursor_at()` 和 `layout_input_scroll_into_view()`。
 
 输入框使用的字体必须包含要显示的文字字形。例如主题默认的 `monospace`
 在 macOS 上通常是 Menlo，不包含中文字形；需要中文时请传入
 `PingFang SC` 等包含 CJK 字形的字体。
+
+## 输入框控件
+
+`widget_create_input()` 在 `layout_input_t` 之上补全外观和鼠标交互，
+开箱即用；`widget_create_search_input()` 是搜索框版本，额外带放大镜图标和
+清除按钮。
+
+```c
+static void on_search_change(const char *text, void *data){
+    // 每次内容变化后调用：键盘、粘贴、清除按钮、set_text 都会触发
+}
+
+widget_input_t *search = widget_create_search_input(
+    panel,
+    0.0f,                       // 宽度，<=0 时取父布局宽度
+    make_align(3,0,2,0,0.0f,52.0f,-32.0f,0.0f),
+    "搜索已安装的软件包",
+    on_search_change, NULL,     // 内容变化回调
+    NULL, NULL                  // 回车提交回调
+);
+```
+
+外观：
+
+- 圆角背景 + 1 像素边框，圆角取自主题的 `rect_round_corner`
+- 悬停、聚焦时背景色和边框色平滑渐变到对应颜色，时长取
+  `button_animation_time`
+- 没有内容时显示占位文字；占位文字有自己的子布局，裁剪范围等于文字区
+- 聚焦后显示文字光标，编辑后先常亮一个周期再按半周期闪烁
+- 左侧图标和右侧清除按钮可选；图标与 × 都在创建时按物理像素程序化生成，
+  不依赖字体字形或主题图片资源，绘制时按 `icon_color` 染色
+
+交互：
+
+- 点击文字区后聚焦，并把光标放到离鼠标最近的字符边界；按住拖动继续移动
+- 点击清除按钮清空内容并保持焦点
+- 内容为空时不显示清除按钮；`controllable=0` 时忽略鼠标但键盘仍可用
+- 回车调用 `submit_callback`，`Esc` 失焦（由 `layout_input` 处理）
+- 文字溢出时自动滚动，让光标保持可见；横向滚轮仍可手动滚动
+
+```c
+widget_input_set_text(search, "font");        // 改写内容，光标移到末尾
+widget_input_set_placeholder(search, "搜索");  // 替换占位文字
+widget_input_set_icon(search, get_icon(...)); // 借用的纹理，控件不释放
+widget_input_set_clear(search, 1);            // 启用清除按钮
+widget_input_set_max_bytes(search, 96);       // 0 表示不限制
+widget_input_focus(search);                   // 直接聚焦
+```
+
+`change_callback` 在控件自己的 update 里检测文本变化后调用，所以
+`sdlgui_handle_event()` 处理完键盘事件后，下一帧就能收到回调；
+`widget_input_set_text()` 同样通过这个路径通知调用方。
+
+输入框控件不读取主题时用 `widget_create_raw_input()`：尺寸、圆角、字体、
+背景/悬停/聚焦色、边框色、文字/占位/光标/清除按钮颜色和动画时长全部由
+调用方传入，适合嵌到自定义配色的面板里。
 
 ## 输入框测试程序
 

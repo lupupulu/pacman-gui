@@ -178,6 +178,107 @@ static void homebrew_list_installed(void){
     homebrew_list("--cask","cask");
 }
 
+/* 只保留能被 shell 安全引用的搜索字符：brew search 的关键词只会是包名，
+ * 过滤掉空格、引号、分号等，避免用户输入被拼进命令。 */
+static void homebrew_keyword_filter(const char *keyword,char *out,size_t size){
+    if(out==NULL||size==0){
+        return;
+    }
+    out[0]='\0';
+    if(keyword==NULL){
+        return;
+    }
+
+    size_t used=0;
+    for(size_t i=0;keyword[i]!='\0'&&used+1<size;i++){
+        unsigned char c=(unsigned char)keyword[i];
+        int ok=(c>='A'&&c<='Z')||(c>='a'&&c<='z')||(c>='0'&&c<='9')||
+               c=='@'||c=='.'||c=='_'||c=='+'||c=='-'||c=='/';
+        if(ok){
+            out[used++]=(char)c;
+        }
+    }
+    out[used]='\0';
+}
+
+/* 读取 `brew search <flag> <keyword>`：每行一个包名，跳过 "==> Formulae"
+ * 这类表头和空行。结果通过 pkg_available_add() 进入 packages 栏目。 */
+static int homebrew_search_flag(const char *flag,const char *meta,const char *keyword){
+    const char *binary=homebrew_binary();
+    if(binary==NULL){
+        return 0;
+    }
+
+    char command[PATH_MAX+128];
+    snprintf(command,sizeof(command),
+        "HOMEBREW_NO_AUTO_UPDATE=1 \"%s\" search %s \"%s\"",binary,flag,keyword);
+
+    FILE *pipe=popen(command,"r");
+    if(pipe==NULL){
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "homebrew: failed to run %s",command);
+        return 0;
+    }
+
+    char line[1024];
+    while(fgets(line,sizeof(line),pipe)!=NULL){
+        size_t length=strlen(line);
+        while(length>0&&(line[length-1]=='\n'||line[length-1]=='\r')){
+            line[--length]='\0';
+        }
+
+        char *name=line;
+        while(*name==' '||*name=='\t'){
+            name++;
+        }
+        if(name[0]=='\0'||name[0]=='='||name[0]=='>'){
+            continue;
+        }
+
+        /* brew search 的名字是单 token；出现空白说明是提示信息，跳过 */
+        char *cursor=name;
+        while(*cursor!='\0'&&*cursor!=' '&&*cursor!='\t'){
+            cursor++;
+        }
+        if(*cursor!='\0'){
+            continue;
+        }
+
+        package_t pkg;
+        memset(&pkg,0,sizeof(pkg));
+        pkg.from="homebrew";
+        pkg.meta_data=(char *)meta;
+        pkg.name=homebrew_strdup(name);
+        pkg.version=homebrew_strdup("unknown");
+        pkg.stat=PKG_STAT_NULL;
+        pkg.size=(unsigned long)-1;
+        if(pkg.name==NULL||pkg.version==NULL){
+            free(pkg.name);
+            free(pkg.version);
+            continue;
+        }
+        pkg_available_add(&pkg);
+    }
+
+    int status=pclose(pipe);
+    return status==0?1:0;
+}
+
+static void homebrew_search(const char *keyword){
+    if(!pacman_homebrew_available()){
+        return;
+    }
+
+    char filtered[128];
+    homebrew_keyword_filter(keyword,filtered,sizeof(filtered));
+    if(filtered[0]=='\0'){
+        return;
+    }
+
+    homebrew_search_flag("--formula","formula",filtered);
+    homebrew_search_flag("--cask","cask",filtered);
+}
+
 static int homebrew_refresh(void){
     if(!pacman_homebrew_available()){
         return 0;
@@ -191,7 +292,8 @@ static pacman_t homebrew_backend={
     .name="homebrew",
     .init=homebrew_init,
     .refresh=homebrew_refresh,
-    .list_installed=homebrew_list_installed
+    .list_installed=homebrew_list_installed,
+    .search=homebrew_search
 };
 
 pacman_t *pacman_homebrew(void){

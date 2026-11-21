@@ -3328,7 +3328,7 @@ void tab_set_content_height(layout_tab_t *tab,float height){
     }
 }
 
-layout_tab_t *create_layout_tab(void *parent,float w,float h,align_t align,float content_height,...){
+layout_tab_t *create_layout_tab(void *parent,float w,float h,align_t align,double content_height,...){
     if(w<=0.0f||h<=0.0f){
         return NULL;
     }
@@ -3361,12 +3361,12 @@ layout_tab_t *create_layout_tab(void *parent,float w,float h,align_t align,float
     content->x=tab->l.x;
     content->y=tab->l.y;
     content->width=w;
-    content->height=content_height>0.0f?content_height:h;
+    content->height=(float)(content_height>0.0?content_height:(double)h);
 
     tab->now=0.0f;
     tab->front_offset=0.0f;
     tab->back_offset=0.0f;
-    tab->auto_height=content_height>0.0f?0u:1u;
+    tab->auto_height=content_height>0.0?0u:1u;
     tab->can_be_slided=0;
 
     va_list arg;
@@ -3390,6 +3390,8 @@ static int draft_text_build_cache(draft_text_t *d);
 static void input_sync_ime_area(layout_input_t *input);
 
 #define INPUT_SCROLL_STEP 48.0f
+/* 光标离文字区左右边缘的最小留白，滚动跟随光标时使用 */
+#define INPUT_CARET_MARGIN 2.0f
 
 /* 截断到 max_bytes，并保证不切断 UTF-8 字符。max_bytes=0 表示不限制。 */
 static size_t input_limit_prefix(const char *text,size_t length,size_t max_bytes){
@@ -3646,16 +3648,17 @@ static void input_mouse(void *p){
     input->last_left=left?1:0;
 }
 
-static float input_prefix_width(const layout_input_t *input){
-    if(input==NULL||input->font==NULL||input->text==NULL||input->cursor==0){
+/* 光标前缀宽度：at 个字节的文字宽度（逻辑像素）。
+ * TTF_GetStringSize(...,0,...) 会测量整段字符串，传入 0 会得到
+ * “光标在末尾”的宽度，必须单独处理 at==0。 */
+static float input_width_at(const layout_input_t *input,size_t at){
+    if(input==NULL||input->font==NULL||input->text==NULL||at==0){
         return 0.0f;
     }
 
-    /* TTF_GetStringSize(...,0,...) 会测量整段字符串，传入 0 会得到
-     * “光标在末尾”的宽度，必须单独处理 cursor==0。 */
     int width=0;
     int height=0;
-    if(!TTF_GetStringSize(input->font,input->text,input->cursor,&width,&height)||width<=0){
+    if(!TTF_GetStringSize(input->font,input->text,at,&width,&height)||width<=0){
         return 0.0f;
     }
 
@@ -3664,6 +3667,10 @@ static float input_prefix_width(const layout_input_t *input){
         scale=1.0f;
     }
     return (float)width/scale;
+}
+
+float layout_input_prefix_width(const layout_input_t *input){
+    return input!=NULL?input_width_at(input,input->cursor):0.0f;
 }
 
 /* 把 IME/候选窗的位置同步到输入框和当前光标。
@@ -3678,7 +3685,7 @@ static void input_sync_ime_area(layout_input_t *input){
     /* 把区域缩到光标所在的小矩形。macOS 的 SDL Cocoa 后端直接用这个
      * rect 决定候选窗位置，不读取 cursor 偏移；给整块输入框会让候选窗
      * 停在输入框左下角，所以这里传光标位置。 */
-    float caret_x=input->l.x+input_prefix_width(input)-input->text_scroll;
+    float caret_x=input->l.x+layout_input_prefix_width(input)-input->text_scroll;
     if(caret_x<input->l.x){
         caret_x=input->l.x;
     }
@@ -3751,6 +3758,106 @@ size_t layout_input_cursor(const layout_input_t *input){
 
 int layout_input_is_focused(const layout_input_t *input){
     return input!=NULL&&input->focused;
+}
+
+void layout_input_scroll_into_view(layout_input_t *input){
+    if(input==NULL||input->font==NULL||input->text==NULL){
+        return;
+    }
+
+    /* 输入法编辑后立刻调用时 text_width 还是上一帧的值，先按当前文本重新测量，
+     * 否则夹取范围会用到过期宽度，光标可能停在可见区外。 */
+    input_measure_text(input);
+    input_clamp_scroll(input);
+
+    float view=input->l.width;
+    if(view>0.0f){
+        float prefix=layout_input_prefix_width(input);
+        float caret=prefix-input->text_scroll;
+        if(caret<INPUT_CARET_MARGIN){
+            input->text_scroll=prefix-INPUT_CARET_MARGIN;
+        }else if(caret>view-INPUT_CARET_MARGIN){
+            input->text_scroll=prefix-(view-INPUT_CARET_MARGIN);
+        }
+        input_clamp_scroll(input);
+    }
+
+    input_position_text(input);
+    input_sync_ime_area(input);
+}
+
+void layout_input_set_text(layout_input_t *input,const char *text){
+    if(input==NULL){
+        return;
+    }
+
+    size_t length=text!=NULL?strlen(text):0;
+    length=input_limit_prefix(text,length,input->max_bytes);
+    if(!input_reserve(input,length+1)){
+        return;
+    }
+
+    /* text 可能指向 input->text 本身（set_max_bytes 会这样调用） */
+    if(length>0){
+        memmove(input->text,text,length);
+    }
+    input->text[length]='\0';
+    input->length=length;
+
+    if(input->cursor>length){
+        input->cursor=length;
+    }
+    /* 新文本可能让原来的光标落到半个 UTF-8 字符里 */
+    while(input->cursor>0&&((unsigned char)input->text[input->cursor]&0xC0)==0x80){
+        input->cursor--;
+    }
+
+    input_rebuild_text(input);
+    layout_input_scroll_into_view(input);
+}
+
+void layout_input_set_cursor(layout_input_t *input,size_t cursor){
+    if(input==NULL||input->text==NULL){
+        return;
+    }
+
+    if(cursor>input->length){
+        cursor=input->length;
+    }
+    while(cursor>0&&((unsigned char)input->text[cursor]&0xC0)==0x80){
+        cursor--;
+    }
+
+    input->cursor=cursor;
+    layout_input_scroll_into_view(input);
+}
+
+void layout_input_set_cursor_at(layout_input_t *input,float x){
+    if(input==NULL||input->text==NULL){
+        return;
+    }
+
+    /* x 是窗口坐标，换算成相对文字起点的位置（已包含 text_scroll），
+     * 然后找横坐标最接近的字符边界。 */
+    float local=x-(input->l.x-input->text_scroll);
+    size_t best=0;
+    float best_distance=SDL_fabsf(local);
+    size_t at=0;
+    while(1){
+        float width=input_width_at(input,at);
+        float distance=SDL_fabsf(local-width);
+        if(distance<best_distance){
+            best=at;
+            best_distance=distance;
+        }
+        if(at>=input->length||width>local){
+            break;
+        }
+        at=input_utf8_next(input->text,input->length,at);
+    }
+
+    input->cursor=best;
+    layout_input_scroll_into_view(input);
 }
 
 int layout_input_event(const SDL_Event *event){
