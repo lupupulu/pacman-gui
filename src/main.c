@@ -109,6 +109,24 @@ int main(int argc,char *argv[]){
                 SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
                              _("Failed to refresh the installed package list"));
             }
+            /* 装载完成前搜索结果不读取已安装注册表；现在补一次已安装标记。 */
+            init_ui_refresh_available_packages();
+        }
+
+        if(loader_done&&pacman_action_poll()){
+            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                        "package action completed; reloading installed registry");
+            /* 先清掉引用旧 package_t 的卡片，再清空并重建注册表。
+             * 第一轮 begin 只负责清空 UI，返回的快照会被 reload 覆盖。 */
+            init_ui_begin_refresh_packages();
+            pacman_reload_installed_all();
+            if(init_ui_begin_refresh_packages()){
+                packages_refreshing=1;
+            }else{
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                             _("Failed to refresh the installed package list"));
+            }
+            init_ui_refresh_available_packages();
         }
 
         if(packages_refreshing&&!init_ui_refresh_packages_batch(PACKAGE_UI_BATCH)){
@@ -127,6 +145,8 @@ int main(int argc,char *argv[]){
 #ifdef __APPLE__
     sdlgui_disable_live_resize();
 #endif
+
+    init_ui_stop_threads();
 
     sdlgui_quit();
     init_ui_quit();

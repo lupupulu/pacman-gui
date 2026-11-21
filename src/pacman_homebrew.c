@@ -7,6 +7,9 @@
 #include <ctype.h>
 #include "pacman_homebrew.h"
 
+static pacman_t homebrew_backend;
+static pacman_t *homebrew_self(void);
+
 static char *homebrew_strdup(const char *text){
     if(text==NULL){
         return NULL;
@@ -24,7 +27,7 @@ static int homebrew_append(const char *name,const char *version,const char *meta
     package_t pkg;
     memset(&pkg,0,sizeof(pkg));
 
-    pkg.from="homebrew";
+    pkg.from=homebrew_self();
     pkg.meta_data=(char *)meta;
     pkg.name=homebrew_strdup(name);
     pkg.version=homebrew_strdup(version);
@@ -246,7 +249,7 @@ static int homebrew_search_flag(const char *flag,const char *meta,const char *ke
 
         package_t pkg;
         memset(&pkg,0,sizeof(pkg));
-        pkg.from="homebrew";
+        pkg.from=homebrew_self();
         pkg.meta_data=(char *)meta;
         pkg.name=homebrew_strdup(name);
         pkg.version=homebrew_strdup("unknown");
@@ -283,13 +286,18 @@ static int homebrew_refresh(void){
     if(!pacman_homebrew_available()){
         return 0;
     }
-    pkg_del_from("homebrew");
+    pkg_del_from(homebrew_self());
     homebrew_list_installed();
     return 1;
 }
 
+static pacman_t *homebrew_self(void){
+    return &homebrew_backend;
+}
+
 static pacman_t homebrew_backend={
     .name="homebrew",
+    .official=0,
     .init=homebrew_init,
     .refresh=homebrew_refresh,
     .list_installed=homebrew_list_installed,

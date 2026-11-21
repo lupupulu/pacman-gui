@@ -1,6 +1,7 @@
 #include <SDL3/SDL.h>
 #include <ctype.h>
 #include <pthread.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "sdlgui.h"
@@ -85,6 +86,9 @@ static void *packages_page_search_thread(void *data){
 
 /* 搜索结果里已经装过的包标成已安装并补上版本号，卡片会显示 update/delete */
 static void packages_page_mark_installed(void){
+    if(!pacman_installed_ready()){
+        return;
+    }
     size_t count=pacman_available_count();
     for(size_t i=0;i<count;i++){
         package_t *package=pacman_available_at(i);
@@ -93,13 +97,34 @@ static void packages_page_mark_installed(void){
         }
         package_t *installed=pacman_installed_find(package->from,package->name);
         if(installed==NULL){
+            /* 依赖包不在 installed 页的显式列表里，但仍然算已安装。 */
+            if(pacman_query_installed(package)){
+                continue;
+            }
+            /* 之前标记成已安装、但已经被删掉的搜索结果恢复为可安装。 */
+            package->stat=PKG_STAT_NULL;
+            package->foreign=0;
+            package->update_available=0;
+            free(package->new_version);
+            package->new_version=NULL;
             continue;
         }
         package->stat=PKG_STAT_INSTALLED;
+        package->foreign=installed->foreign;
         char *version=page_strdup(installed->version);
         if(version!=NULL){
             free(package->version);
             package->version=version;
+        }
+        free(package->new_version);
+        package->new_version=NULL;
+        package->update_available=0;
+        if(installed->update_available&&installed->new_version!=NULL){
+            char *new_version=page_strdup(installed->new_version);
+            if(new_version!=NULL){
+                package->new_version=new_version;
+                package->update_available=1;
+            }
         }
     }
 }
@@ -403,6 +428,29 @@ static void packages_page_stop(packages_page_t *page){
     }
 }
 
+/* 包操作完成后重扫当前搜索结果：可安装注册表本身没变，只是已安装
+ * 状态/版本可能变了。搜索线程还在写 pkg_available 时不能动列表，
+ * 等搜索结束时 finish_search 会重新 mark_installed，所以直接跳过。 */
+int init_ui_refresh_available_packages(void){
+    packages_page_t *page=packages_page_view;
+    if(page==NULL||page->list==NULL||page->searching){
+        return 0;
+    }
+
+    list_clear(page->list);
+    list_set_slide(page->list,0.0f);
+    page->scan_index=0;
+    page->scan_total=pacman_available_count();
+    page->scan_running=page->scan_total>0?1u:0u;
+    packages_page_mark_installed();
+    packages_page_sync_hints(page);
+    if(page->slider!=NULL){
+        page->slider->all_height=0.0f;
+        widget_slider_set(page->slider,0.0f);
+    }
+    return 1;
+}
+
 typedef struct {
     layout_rect_t rect;
     layout_list_t *list;
@@ -695,8 +743,12 @@ int init_ui_refresh_packages_batch(size_t max_items){
     return package_refresh_index<package_refresh_total?1:0;
 }
 
-void init_ui_quit(void){
+void init_ui_stop_threads(void){
+    /* 必须在 sdlgui_quit() 删除布局之前 join，因为页面指针随后会失效。 */
     packages_page_stop(packages_page_view);
+}
+
+void init_ui_quit(void){
     packages_page_view=NULL;
     installed_page_view=NULL;
     pacman_quit_all();

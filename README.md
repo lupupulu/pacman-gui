@@ -525,10 +525,15 @@ layout_label_t *label = create_layout_label(
 - 版本、维护者/提交者、许可证：`TEXT_CONTEXT`
 - 右侧按钮上下排列且等宽：
   - 未安装：`\\install install`
-  - 已安装：上方 `\\update update`，下方 `\\delete delete`
+  - 已安装且检测到新版本：上方 `\\update update`，下方 `\\delete delete`
+  - 已安装且已是最新：上方 `\\install reinstall`，下方 `\\delete delete`
+- 版本行在可更新时显示 `Version: 旧版本 -> 新版本`
 - maintainer 和 submitter 都为空时，整行人员信息不创建、不显示
 - `licenses` 为空时不创建许可证行
-- 按钮回调暂未接逻辑，只用于绘制测试
+- 只有 `package->from->official` 为 1 且 `package->foreign == 0`
+  （官方同步仓库、非 AUR/手动安装）的卡片才创建按钮；AUR/外部包或没有
+  包管理能力的后端只显示信息。按钮通过 `pacman_action_start()` 把操作交给
+  后台线程，不会在回调里直接跑 pacman。
 
 `init.c` 里创建 tabs 和页面布局，`main.c` 只负责初始化和事件循环：
 - `package` 页：搜索可安装包，结果卡片带 install 按钮
@@ -561,7 +566,13 @@ installed 页是一个容器，里面放 `layout_list_t`、右侧 `widget_slider
 - `join` 后用 `pacman_available_count()/pacman_available_at()` 按
   `PAGE_CARDS_PER_FRAME` 每帧补卡片，所以结果很多时界面也不卡
 - 结果里已经安装过的包会被标记为 `PKG_STAT_INSTALLED` 并补上本地版本号，
-  卡片自动变成 update/delete 按钮
+  有更新时同步 `update_available/new_version`，卡片显示 update/delete 或
+  reinstall/delete 按钮
+- 显式已安装列表不包含作为依赖安装的包；搜索结果会再通过后端的
+  `query_installed()` 查本地数据库，所以 `gnu-free-fonts` 这类依赖包也会正确
+  显示为 reinstall/delete，而不会显示成可以 install
+- 已安装列表装载完成前（`pacman_installed_ready()` 为 0）不会读取
+  `pkg_installed`；loader 完成后主循环会再刷新一次 packages 页，补上安装状态
 - 关键词为空时只清空结果，不启动线程；没有结果时显示 “No matching packages”，
   还没搜索时显示输入提示
 
@@ -591,13 +602,16 @@ for(size_t i=0;i<count;i++){
 
 `pkg_installed` 以 `package_t.name` 升序排列，增删由 `pacman.c` 统一负责：
 
+- `package_t.from` 现在是指向所属后端的 `pacman_t *`；它不再是字符串，
+  AUR 后端将来只需要提供自己的 `pacman_t`，注册表就能区分来源。
 - `pkg_add()` 把包插入有序位置；如果 `from/name/meta_data/version` 全部相同
   的包已经存在，说明该后端的缓存过期，会先 `pkg_del_from(pkg->from)` 再调用
-  后端的 `list_installed()` 重建。
-- `pkg_del()` 按这四项精确匹配并删除；找不到时同样触发对应管理器的重建。
-- `pkg_del_from()` 删除 `from` 等于给定管理器名的所有包。
-- `pkg_add()` 接管 `name/version/description/licenses/submitter` 的所有权；
-  `from/meta_data` 是后端借用的常量字符串，注册表不释放它们。
+  `pkg->from->list_installed()` 重建。
+- `pkg_del()` 按这四项精确匹配并删除；找不到时同样触发对应后端的重建。
+- `pkg_del_from(pacman_t *from)` 删除来自给定后端的全部包。
+- `pkg_add()` 接管 `name/version/new_version/description/licenses/submitter`
+  的所有权；`from` 是后端指针，`meta_data` 是后端借用的常量字符串，
+  注册表不释放它们。
 
 `pacman_backend_find("alpm")` 按 `pacman_t.name` 查找已注册后端。
 
@@ -606,14 +620,15 @@ for(size_t i=0;i<count;i++){
 `package` 页用另一套注册表 `pkg_available`，和已安装列表完全分开：
 
 - 后端实现 `pacman_t.search(keyword)`，通过 `pkg_available_add()` 把搜索结果
-  放进来；`from/meta_data` 同样是借用的常量字符串，其余字段由注册表接管；
+  放进来；`from` 是后端指针，`meta_data` 是后端借用的字符串，其余字段由
+  注册表接管；
 - `pkg_available_add()` 按 `from/name/meta_data` 去重，和 `pkg_add()` 不同，
   它不会触发 `pkg_resync()`，避免在搜索线程里回头写已安装数组；
 - 新条目追加到末尾，**保持后端的返回顺序、不按字母排序**：搜索结果的相关性
   由后端决定，页面也只按数组顺序生成卡片；
 - `pacman_search_all(keyword)` 先清空注册表，再依次调用所有支持搜索的后端；
 - 主线程用 `pacman_available_count()` / `pacman_available_at()` 按数组顺序遍历；
-- `pacman_installed_find(from,name)` 用来判断搜索结果是否已安装；
+- `pacman_installed_find(package->from,name)` 用来判断搜索结果是否已安装；
 - `pacman_quit_all()` 会一并释放可安装注册表。
 
 搜索线程只写 `pkg_available`，主线程 `pthread_join` 之后才读；页面在等待结果
@@ -638,7 +653,41 @@ for(size_t i=0;i<count;i++){
 - 只保留 `alpm_pkg_get_reason()` 为 `ALPM_PKG_REASON_EXPLICIT` 的包，
   作为依赖自动安装的包不显示；
 - 填入名称、版本、描述、许可证、packager、安装大小；
-- `stat = PKG_STAT_INSTALLED`，`from = "alpm"`。
+- `stat = PKG_STAT_INSTALLED`，`from` 指向 `pacman_alpm()` 返回的后端。
+
+### 官方仓库搜索、更新检查与包操作
+
+`pacman_alpm.c` 的本地数据库仍用 libalpm，同步数据库查询和需要 root 的
+安装事务交给 `pacman` 命令本身，避免在 GUI 里重复解析 `pacman.conf`：
+
+- `search(keyword)` 执行
+  `pacman -Ss --color never -- <keyword>`，只解析官方同步仓库的结果；
+  每行的 `repo/name version` 变成 `package_t`，`from` 指向 alpm 后端，
+  `meta_data` 为 NULL，`stat = PKG_STAT_NULL`。
+- `list_installed()` 结束后执行 `pacman -Qm --color never`，把不在官方同步
+  仓库里的 AUR/手动安装包标记为 `foreign = 1`；`pacman -Qm` 失败时保守地
+  把所有 alpm 包标成 foreign，避免误操作。
+- `check_updates()` 执行 `pacman -Qu --color never`，把可升级包的
+  `new_version` 和新版本标记写入已安装注册表；foreign 包不参与更新检查。
+  安装列表加载后会自动调用一次，所以官方包卡片能显示 `旧版本 -> 新版本`。
+- `install_package()` / `update_package()` / `uninstall_package()` 分别执行
+  `pacman -S --asexplicit`、`pacman -S --asexplicit`、`pacman -R`
+  （均带 `--noconfirm`）。显式安装不使用 `--needed`：如果目标已经作为依赖
+  安装，`pacman -S` 会重装，而 `--asexplicit` 保证安装原因变为 explicit，
+  操作完成后能同步进入 installed 页；`gnu-free-fonts` 这类依赖包因此不会再
+  出现“点击安装后 installed 里没有”的情况。
+  普通用户下优先用 `pkexec` 触发 polkit；没有 pkexec 时退回
+  `sudo -n`，没有提权工具就报错。命令通过 argv 传给 `execvp`，不经过 shell。
+  动作不捕获 pacman 的 stdout/stderr，只看退出码：pacman hook 可能 fork 出
+  继承管道的后台进程，如果等待 pipe EOF，包已经删掉但后台线程会一直不结束，
+  主循环就不会重新枚举注册表。
+- 只有 `official = 1` 且包本身不是 foreign 的后端/包允许这些操作；当前只有
+  alpm 设置 official，Homebrew 和未来的 AUR 后端不会走 pacman 事务。
+- 所有命令都在后台线程执行。`pacman_action_start()` 会复制包名等字段，
+  不继续持有注册表里的 `package_t`；主循环用 `pacman_action_poll()` 等待
+  完成，然后清空旧卡片、重新枚举并重建 UI。
+- 测试时可以设置 `PACMAN_GUI_DRY_RUN=1` 只记录命令不执行；
+  `PACMAN_GUI_PACMAN=/path/to/fake-pacman` 可以替换 pacman 命令做解析测试。
 
 Makefile 通过 `pkg-config --exists libalpm` 做编译期判断：找到时定义
 `HAVE_LIBALPM=1`、编译 `pacman_alpm.c` 并链接 `-lalpm`；没找到时不把该源文件
@@ -652,7 +701,8 @@ Makefile 在构建时检查 `PATH`、`HOMEBREW_PREFIX`、`/opt/homebrew`、
 交叉编译或打包机没装 brew 时，可以用 `make HAVE_HOMEBREW=1` 强制编入；
 想明确排除时用 `make HAVE_HOMEBREW=0`。
 
-`pacman_homebrew.c` 实现了 `pacman_t` 的 Homebrew 版本：
+`pacman_homebrew.c` 实现了 `pacman_t` 的 Homebrew 版本。Homebrew 的
+`official` 为 0，因此不显示 pacman 的安装/更新/删除按钮：
 
 - `pacman_homebrew_available()` 依次检查 `HOMEBREW_PREFIX/bin/brew`、
   `/opt/homebrew/bin/brew`、`/usr/local/bin/brew`、
@@ -661,7 +711,7 @@ Makefile 在构建时检查 `PATH`、`HOMEBREW_PREFIX`、`/opt/homebrew`、
   `list_installed()` 调用 `brew list --versions --formula` 和
   `brew list --versions --cask`，再通过 `pkg_add()` 加入全局数组；
 - 每个包创建一条 `package_t`，`stat` 统一设为 `PKG_STAT_INSTALLED`，
-  `from = "homebrew"`，`meta_data` 标记 `formula` 或 `cask`；
+  `from` 指向 Homebrew 后端，`meta_data` 标记 `formula` 或 `cask`；
 - Homebrew CLI 文本没有 licenses、maintainer、submitter、描述等字段，这些内容
   使用卡片的空值回退；
 - `search(keyword)` 调用 `brew search --formula <keyword>` 和

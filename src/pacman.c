@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 #include "pacman.h"
 #include "sdlgui_widget.h"
 #include "CDS/darray.h"
@@ -30,17 +31,19 @@ typedef struct {
 static package_array_t pkg_installed;
 static int pkg_registry_ready=0;
 static int pkg_resyncing=0;
+static SDL_AtomicInt installed_ready;
 
 /* ---- 已安装包注册表 ---- */
 
-/* 释放由 pkg_add 接管的字符串字段。from/meta_data 是后端的常量字符串，
- * icon/data 也不归注册表所有，不能在这里释放。 */
+/* 释放由 pkg_add 接管的字符串字段。from 是后端指针，meta_data 是后端借用的
+ * 常量字符串，icon/data 也不归注册表所有，不能在这里释放。 */
 static void pkg_free_fields(package_t *pkg){
     if(pkg==NULL){
         return;
     }
     free(pkg->name);
     free(pkg->version);
+    free(pkg->new_version);
     free(pkg->description);
     if(pkg->licenses!=NULL){
         for(char **i=pkg->licenses;*i!=NULL;i++){
@@ -74,7 +77,7 @@ static int pkg_str_equal(const char *a,const char *b){
 }
 
 static int pkg_same(const package_t *a,const package_t *b){
-    return pkg_str_equal(a->from,b->from)
+    return a->from==b->from
         &&pkg_str_equal(a->name,b->name)
         &&pkg_str_equal(a->meta_data,b->meta_data)
         &&pkg_str_equal(a->version,b->version);
@@ -122,16 +125,14 @@ static int pkg_find(const package_t *key,size_t *index){
 }
 
 /* 注册表里没有这个包（或重复上报）时，以该管理器为准重建它的包列表。 */
-static void pkg_resync(const char *from){
+static void pkg_resync(pacman_t *from){
     if(from==NULL||pkg_resyncing){
         return;
     }
     pkg_resyncing=1;
-    pkg_del_from((char *)from);
-
-    pacman_t *backend=pacman_backend_find((char *)from);
-    if(backend!=NULL&&backend->list_installed!=NULL){
-        backend->list_installed();
+    pkg_del_from(from);
+    if(from->list_installed!=NULL){
+        from->list_installed();
     }
     pkg_resyncing=0;
 }
@@ -155,7 +156,7 @@ void pkg_add(package_t *pkg){
         if(pkg_same(item,pkg)){
             /* 相同包已经存在：说明该管理器的缓存过期，清掉后重新枚举。
              * 入参由 pkg_add 接管，去重时负责释放。 */
-            const char *from=pkg->from;
+            pacman_t *from=pkg->from;
             pkg_free_fields(pkg);
             pkg_resync(from);
             return;
@@ -184,15 +185,15 @@ void pkg_del(package_t *pkg){
     pkg_resync(pkg->from);
 }
 
-void pkg_del_from(char *name){
-    if(name==NULL){
+void pkg_del_from(pacman_t *from){
+    if(from==NULL){
         return;
     }
     pkg_registry_ensure();
 
     for(size_t i=pkg_installed.size;i>0;i--){
         package_t *pkg=&pkg_installed.arr[i-1];
-        if(pkg->from!=NULL&&strcmp(pkg->from,name)==0){
+        if(pkg->from==from){
             pkg_free_fields(pkg);
             da_del(sizeof(package_t),&pkg_installed,i-1);
         }
@@ -214,7 +215,7 @@ package_t *pacman_package_at(size_t index){
 
 /* 按 from+name 在已安装注册表里查找；找不到返回 NULL。
  * 供 packages 页把搜索结果标记成“已安装”。 */
-package_t *pacman_installed_find(const char *from,const char *name){
+package_t *pacman_installed_find(const pacman_t *from,const char *name){
     if(name==NULL){
         return NULL;
     }
@@ -226,7 +227,7 @@ package_t *pacman_installed_find(const char *from,const char *name){
         if(!pkg_str_equal(item->name,name)){
             break;
         }
-        if(pkg_str_equal(item->from,from)){
+        if(item->from==from){
             return item;
         }
     }
@@ -273,6 +274,7 @@ void pacman_register(pacman_t *m){
 
 int pacman_init_all(void){
     register_default_backends();
+    SDL_SetAtomicInt(&installed_ready,0);
     pkg_registry_clear();
 
     int initialized=0;
@@ -293,15 +295,185 @@ int pacman_init_all(void){
  * 完成后由主线程重建卡片。 */
 void pacman_list_installed_all(void){
     register_default_backends();
+    SDL_SetAtomicInt(&installed_ready,0);
     for(size_t i=0;i<backend_count;i++){
         pacman_t *backend=backends[i];
         if(backend!=NULL&&backend->list_installed!=NULL){
             backend->list_installed();
         }
     }
+    pacman_check_updates_all();
+    SDL_SetAtomicInt(&installed_ready,1);
+}
+
+void pacman_check_updates_all(void){
+    register_default_backends();
+    for(size_t i=0;i<backend_count;i++){
+        pacman_t *backend=backends[i];
+        if(backend!=NULL&&backend->check_updates!=NULL){
+            backend->check_updates();
+        }
+    }
+}
+
+void pacman_reload_installed_all(void){
+    register_default_backends();
+    SDL_SetAtomicInt(&installed_ready,0);
+    pkg_registry_clear();
+    for(size_t i=0;i<backend_count;i++){
+        pacman_t *backend=backends[i];
+        if(backend!=NULL&&backend->list_installed!=NULL){
+            backend->list_installed();
+        }
+    }
+    pacman_check_updates_all();
+    SDL_SetAtomicInt(&installed_ready,1);
+}
+
+int pacman_installed_ready(void){
+    return SDL_GetAtomicInt(&installed_ready);
+}
+
+int pacman_query_installed(package_t *pkg){
+    if(pkg==NULL||pkg->from==NULL||pkg->from->query_installed==NULL){
+        return 0;
+    }
+    return pkg->from->query_installed(pkg);
+}
+
+/* ---- 后台安装/更新/删除 ---- */
+
+typedef struct {
+    package_t pkg;
+    char name[256];
+    char meta_data[128];
+    char version[128];
+    pacman_t *backend;
+    pacman_action_t action;
+    int result;
+}action_job_t;
+
+static action_job_t action_job;
+static pthread_t action_thread;
+static SDL_AtomicInt action_done;
+static int action_running=0;
+
+static void *pacman_action_thread(void *data){
+    action_job_t *job=data;
+    int result=0;
+
+    if(job->backend!=NULL){
+        if(job->action==PACMAN_ACTION_INSTALL&&job->backend->install_package!=NULL){
+            result=job->backend->install_package(&job->pkg);
+        }else if(job->action==PACMAN_ACTION_UPDATE&&job->backend->update_package!=NULL){
+            result=job->backend->update_package(&job->pkg);
+        }else if(job->action==PACMAN_ACTION_UNINSTALL&&
+                 job->backend->uninstall_package!=NULL){
+            result=job->backend->uninstall_package(&job->pkg);
+        }
+    }
+
+    job->result=result;
+    if(result){
+        SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                    "package action %d on %s succeeded",(int)job->action,job->name);
+    }else{
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "package action %d on %s failed",(int)job->action,job->name);
+    }
+    SDL_SetAtomicInt(&action_done,1);
+    return NULL;
+}
+
+static void pacman_action_wait(void){
+    if(action_running){
+        pthread_join(action_thread,NULL);
+        action_running=0;
+    }
+}
+
+int pacman_action_busy(void){
+    return action_running;
+}
+
+int pacman_action_start(package_t *pkg,pacman_action_t action){
+    if(pkg==NULL||pkg->from==NULL||pkg->name==NULL){
+        return 0;
+    }
+    if(!pacman_installed_ready()){
+        return 0;
+    }
+    if(action<0||action>PACMAN_ACTION_UNINSTALL){
+        return 0;
+    }
+    if(!pkg->from->official||pkg->foreign){
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "package %s is not from an official non-AUR repository",pkg->name);
+        return 0;
+    }
+
+    pacman_t *backend=pkg->from;
+    if((action==PACMAN_ACTION_INSTALL&&backend->install_package==NULL)||
+       (action==PACMAN_ACTION_UPDATE&&backend->update_package==NULL)||
+       (action==PACMAN_ACTION_UNINSTALL&&backend->uninstall_package==NULL)){
+        return 0;
+    }
+    if(action_running||strlen(pkg->name)>=sizeof(action_job.name)){
+        return 0;
+    }
+
+    memset(&action_job,0,sizeof(action_job));
+    action_job.pkg=*pkg;
+    snprintf(action_job.name,sizeof(action_job.name),"%s",pkg->name);
+    action_job.pkg.name=action_job.name;
+    if(pkg->meta_data!=NULL){
+        snprintf(action_job.meta_data,sizeof(action_job.meta_data),"%s",pkg->meta_data);
+        action_job.pkg.meta_data=action_job.meta_data;
+    }else{
+        action_job.pkg.meta_data=NULL;
+    }
+    if(pkg->version!=NULL){
+        snprintf(action_job.version,sizeof(action_job.version),"%s",pkg->version);
+        action_job.pkg.version=action_job.version;
+    }else{
+        action_job.pkg.version=NULL;
+    }
+    action_job.pkg.licenses=NULL;
+    action_job.pkg.new_version=NULL;
+    action_job.pkg.description=NULL;
+    action_job.pkg.submitter=NULL;
+    action_job.pkg.maintainers=NULL;
+    action_job.pkg.contributors=NULL;
+    action_job.pkg.detail=NULL;
+    action_job.pkg.data=NULL;
+    action_job.backend=backend;
+    action_job.action=action;
+
+    SDL_SetAtomicInt(&action_done,0);
+    action_running=1;
+    if(pthread_create(&action_thread,NULL,pacman_action_thread,&action_job)!=0){
+        action_running=0;
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION,
+                     "Failed to create package action thread");
+        return 0;
+    }
+    return 1;
+}
+
+int pacman_action_poll(void){
+    if(!action_running||!SDL_GetAtomicInt(&action_done)){
+        return 0;
+    }
+    pthread_join(action_thread,NULL);
+    action_running=0;
+    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION,
+                "package action finished; refreshing registry");
+    return 1;
 }
 
 void pacman_quit_all(void){
+    pacman_action_wait();
+    SDL_SetAtomicInt(&installed_ready,0);
     for(size_t i=0;i<backend_count;i++){
         pacman_t *backend=backends[i];
         if(backend!=NULL&&backend->quit!=NULL){
@@ -380,7 +552,7 @@ void pkg_available_add(package_t *pkg){
     for(size_t i=0;i<pkg_available.size;i++){
         package_t *item=&pkg_available.arr[i];
         if(pkg_str_equal(item->name,pkg->name)&&
-           pkg_str_equal(item->from,pkg->from)&&
+           item->from==pkg->from&&
            pkg_str_equal(item->meta_data,pkg->meta_data)){
             pkg_free_fields(pkg);
             return;
@@ -552,6 +724,34 @@ static layout_label_t *package_label(layout_t *card,TTF_Font *font,
     return label;
 }
 
+/* 卡片按钮只把操作交给后台线程；真正的 pacman 事务在 pacman.c 的
+ * action job 里运行，完成后主循环重建列表。 */
+static void package_primary_click(int status,void *data){
+    layout_package_t *card=data;
+    if(status!=BUTTON_STATUS_TRIGGER||card==NULL||card->package==NULL){
+        return;
+    }
+    pacman_action_t action=card->package->stat==PKG_STAT_NULL?
+        PACMAN_ACTION_INSTALL:PACMAN_ACTION_UPDATE;
+    if(!pacman_action_start(card->package,action)){
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "package action rejected for %s",
+                    card->package->name!=NULL?card->package->name:"-");
+    }
+}
+
+static void package_remove_click(int status,void *data){
+    layout_package_t *card=data;
+    if(status!=BUTTON_STATUS_TRIGGER||card==NULL||card->package==NULL){
+        return;
+    }
+    if(!pacman_action_start(card->package,PACMAN_ACTION_UNINSTALL)){
+        SDL_LogWarn(SDL_LOG_CATEGORY_APPLICATION,
+                    "package action rejected for %s",
+                    card->package->name!=NULL?card->package->name:"-");
+    }
+}
+
 layout_rect_t *create_layout_package(package_t *package){
     if(package==NULL){
         return NULL;
@@ -606,8 +806,14 @@ layout_rect_t *create_layout_package(package_t *package){
     }
     card->name=package_label((layout_t *)card,subtitle,name,get_text_color(TEXT_TITLE));
 
-    char version_text[256];
-    snprintf(version_text,sizeof(version_text),"Version: %s",version);
+    char version_text[512];
+    if(package->update_available&&package->new_version!=NULL&&
+       package->new_version[0]!='\0'){
+        snprintf(version_text,sizeof(version_text),"Version: %s -> %s",
+                 version,package->new_version);
+    }else{
+        snprintf(version_text,sizeof(version_text),"Version: %s",version);
+    }
     card->version=package_label((layout_t *)card,context,version_text,get_text_color(TEXT_CONTEXT));
 
     int has_maintainer=maintainer[0]!='\0';
@@ -670,32 +876,40 @@ layout_rect_t *create_layout_package(package_t *package){
         return NULL;
     }
 
-    const char *primary_text=package->stat==PKG_STAT_NULL
-        ?"\\install install"
-        :"\\update update";
-    card->primary=widget_create_button(
-        card,
-        PACKAGE_PRIMARY_WIDTH,
-        make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f),
-        primary_text,
-        NULL,
-        NULL
-    );
-    if(card->primary!=NULL){
-        card->primary->l.align=make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f);
-    }
+    /* 只有官方/非 AUR 后端才显示操作按钮；AUR 或没有包管理能力的
+     * 后端（例如 Homebrew）只显示信息。 */
+    int manageable=package->from!=NULL&&package->from->official&&!package->foreign;
 
+    const char *primary_text="\\install install";
     if(package->stat!=PKG_STAT_NULL){
-        card->remove=widget_create_button(
+        primary_text=package->update_available?
+            "\\update update":"\\install reinstall";
+    }
+    if(manageable){
+        card->primary=widget_create_button(
             card,
-            PACKAGE_DELETE_WIDTH,
+            PACKAGE_PRIMARY_WIDTH,
             make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f),
-            "\\delete delete",
-            NULL,
-            NULL
+            primary_text,
+            package_primary_click,
+            card
         );
-        if(card->remove!=NULL){
-            card->remove->l.align=make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f);
+        if(card->primary!=NULL){
+            card->primary->l.align=make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f);
+        }
+
+        if(package->stat!=PKG_STAT_NULL){
+            card->remove=widget_create_button(
+                card,
+                PACKAGE_DELETE_WIDTH,
+                make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f),
+                "\\delete delete",
+                package_remove_click,
+                card
+            );
+            if(card->remove!=NULL){
+                card->remove->l.align=make_align(0,0,0,0,0.0f,0.0f,0.0f,0.0f);
+            }
         }
     }
 

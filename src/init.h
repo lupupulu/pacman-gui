@@ -12,6 +12,11 @@ int init_ui_begin_refresh_packages(void);
 /* 继续增量刷新：每次最多推进 max_items 个已枚举包；返回 1 表示还有未
  * 枚举的包。卡片由 installed_page_update() 每帧按限额补进列表。 */
 int init_ui_refresh_packages_batch(size_t max_items);
+/* 包操作完成后刷新 packages 页当前搜索结果的卡片（重新标记已安装/
+ * 可更新版本）。搜索线程仍在运行时返回 0，不碰列表。 */
+int init_ui_refresh_available_packages(void);
+/* 停止搜索等 UI 后台线程；必须在 sdlgui_quit() 之前调用。 */
+void init_ui_stop_threads(void);
 /* 释放 pacman 后端和已安装包数据；应在界面销毁后调用。 */
 void init_ui_quit(void);
 
