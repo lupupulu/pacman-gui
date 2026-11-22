@@ -26,7 +26,7 @@ brew install sdl3 sdl3_ttf        # 必需
 brew install pkgconf gettext      # 可选：pkg-config；gettext 用于本地化
 ```
 
-macOS 不需要 fontconfig：`src/sdlgui_fontlookup.c` 直接调用系统 CoreText，
+macOS 不需要 fontconfig：`src/sdlgui/fontlookup.c` 直接调用系统 CoreText，
 还能把 `monospace` / `sans-serif` / `serif` 这类通用族名映射到 Menlo、SF Pro、
 Times New Roman。没有 gettext 时 `_()` 会退化成英文原文，程序照常编译运行。
 
@@ -112,12 +112,14 @@ src/pacman.c   包管理器后端注册表、统一包视图与软件包卡片
 src/pacman.h    package_t、pacman_t 和后端接口
 src/pacman_alpm.c/.h      libalpm 已安装包后端
 src/pacman_homebrew.c/.h  Homebrew 后端（已安装枚举与可安装包搜索）
-src/sdlgui.c   窗口、鼠标、布局、绘制与高 DPI 处理
-src/sdlgui.h
-src/sdlgui_theme.c   主题、配色、字体缓存与 TOML 配置
-src/sdlgui_theme.h
-src/sdlgui_fontlookup.c/.h   字体族名 -> 字体文件（macOS CoreText / Linux fontconfig）
-src/sdlgui_widget.c/.h   按钮、开关、选择器与滑块控件
+src/sdlgui/
+  sdlgui.c/.h       窗口、鼠标、绘制、事件循环与高 DPI 处理
+  layout.c/.h       布局树、draft、label、list、tab、bbox 与 layout button
+  input.c/.h        layout_input 与输入框控件 widget_input
+  widget.c/.h       按钮、开关、选择器、滑块与设置行控件
+  theme.c/.h        主题、配色、字体缓存与 TOML 配置
+  fontlookup.c/.h   字体族名 -> 字体文件（macOS CoreText / Linux fontconfig）
+  sdlgui_i18n.h     本地化入口
 src/CDS/       单头文件配置/TOML 解析库
 packaging/macos/Info.plist   macOS 应用包信息
 build/pacman_pixel_font.c    构建时生成的嵌入字体源（已被 .gitignore 忽略）
@@ -247,7 +249,7 @@ python3 tools/gen_lost_icon.py -o build/lost_icon.c \
 开关控件是独立的 `widget_switch_t`，不共用按钮结构，点击后在开/关之间切换：
 
 ```c
-#include "sdlgui_widget.h"
+#include "widget.h"
 
 static void on_switch(int on,void *data){
     // on: 0=关，1=开
@@ -416,7 +418,7 @@ set_selector_item_width(selector, 180.0f);
 `list_set_slide()`：
 
 ```c
-#include "sdlgui_widget.h"
+#include "widget.h"
 
 static void on_slide(float offset,void *data){
     list_set_slide((layout_list_t *)data,offset);
@@ -491,7 +493,7 @@ page->back_offset = 24.0f;
 
 ## Label 布局
 
-`create_layout_label()` 在 `sdlgui.c` 里提供了一个简单的文字标签布局：
+`create_layout_label()` 在 `layout.c` 里提供了一个简单的文字标签布局：
 
 ```c
 TTF_Font *font = obtain_font(get_font(TEXT_CONTEXT),
@@ -990,7 +992,7 @@ macOS 的窗口图标 API 本身不生效，图标由应用包里的 `.icns` 提
 `-DSDLGUI_LOCALEDIR=\"...\"` 指定其他目录。`sdlgui_init()` 先把 locale 固定为 C，
 内置主题保持英文；`theme_set()` 成功加载主题后才按环境 locale 调用 gettext。
 
-macOS 默认没有 `libintl`。`src/sdlgui_i18n.h` 检测不到 `<libintl.h>` 时会把
+macOS 默认没有 `libintl`。`src/sdlgui/sdlgui_i18n.h` 检测不到 `<libintl.h>` 时会把
 `gettext` / `bindtextdomain` 换成空操作，界面回退英文；装了 Homebrew gettext 后
 Makefile 会自动加 `-lintl` 和对应头文件路径。
 

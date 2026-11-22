@@ -25,7 +25,7 @@
 #include <string.h>
 #include <pthread.h>
 #include "pacman.h"
-#include "sdlgui_widget.h"
+#include "widget.h"
 #include "CDS/darray.h"
 #ifdef HAVE_LIBALPM
 #include "pacman_alpm.h"

@@ -19,7 +19,7 @@
  * SPDX-License-Identifier: LGPL-3.0-or-later
  */
 
-#include "sdlgui_fontlookup.h"
+#include "fontlookup.h"
 
 #include <stdio.h>
 #include <stdlib.h>

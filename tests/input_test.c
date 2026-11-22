@@ -10,6 +10,7 @@
 #include <SDL3_ttf/SDL_ttf.h>
 #include <stdio.h>
 #include "sdlgui.h"
+#include "input.h"
 
 #define FIELD_X 120.0f
 #define FIELD_Y 130.0f

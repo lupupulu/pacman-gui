@@ -26,7 +26,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include "sdlgui.h"
-#include "sdlgui_widget.h"
+#include "input.h"
+#include "widget.h"
 #include "sdlgui_i18n.h"
 #include "pacman.h"
 #include "init.h"

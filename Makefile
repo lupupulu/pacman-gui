@@ -71,7 +71,7 @@ BREW_PREFIX ?= $(shell brew --prefix 2>/dev/null || (test -d /opt/homebrew && ec
 OPT      ?= -O2
 LTO      ?= 0
 
-CFLAGS  += -std=c99 -Wall -Wextra -Wshadow $(OPT) -g -MMD -MP
+CFLAGS  += -std=c99 -Wall -Wextra -Wshadow $(OPT) -g -MMD -MP -I$(SRCDIR) -I$(SRCDIR)/sdlgui
 LDFLAGS +=
 LDLIBS  +=
 
@@ -164,7 +164,7 @@ TEST_INPUT_OBJS := $(filter-out build/obj/main.o,$(OBJS))
 
 $(TEST_INPUT_OBJ): $(TEST_INPUT_SRC)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -I$(SRCDIR) -c $< -o $@
+	$(CC) $(CFLAGS) -c $< -o $@
 
 $(TEST_INPUT): $(TEST_INPUT_OBJ) $(TEST_INPUT_OBJS)
 	@mkdir -p $(dir $@)

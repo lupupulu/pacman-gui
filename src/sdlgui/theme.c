@@ -26,9 +26,9 @@
 #include <limits.h>
 #include <math.h>
 #include "sdlgui.h"
-#include "sdlgui_theme.h"
+#include "theme.h"
 #include "sdlgui_i18n.h"
-#include "sdlgui_fontlookup.h"
+#include "fontlookup.h"
 #include "CDS/darray.h"
 #include "CDS/confc.h"
 
